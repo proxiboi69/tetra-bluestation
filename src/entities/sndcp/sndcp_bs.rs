@@ -1,7 +1,7 @@
 use crate::common::messagerouter::MessageQueue;
 use crate::common::tetra_common::Sap;
 use crate::common::tetra_entities::TetraEntity;
-use crate::config::config::SharedConfig;
+use crate::config::stack_config::SharedConfig;
 use crate::entities::TetraEntityTrait;
 use crate::saps::sapmsg::SapMsg;
 use crate::unimplemented_log;

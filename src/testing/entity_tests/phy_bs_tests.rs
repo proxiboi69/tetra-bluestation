@@ -1,15 +1,17 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::build_soapysdr_phy;
-    use crate::config::config::{RfIoType, SharedConfig, StackMode};
+    use crate::config::stack_config::{PhyBackend, SharedConfig, StackMode};
     use crate::common::messagerouter::MessageRouter;
     use crate::common::debug;
+    use crate::config::stack_config_soapy::{CfgSoapySdr, LimeSdrCfg, UsrpB2xxCfg};
     use crate::entities::TetraEntityTrait;
     use crate::entities::mle::mle_bs_ms::Mle;
     use crate::entities::lmac::lmac_bs::LmacBs;
     use crate::entities::mm::mm_bs::MmBs;
     use crate::entities::llc::llc_bs_ms::Llc;
+    use crate::entities::phy::components::rxtxdev_soapysdr::RxTxDevSoapySdr;
+    use crate::entities::phy::phy_bs::PhyBs;
     use crate::entities::umac::umac_bs::UmacBs;
     use crate::testing::component_test::{ComponentTest, default_test_config};
 
@@ -66,13 +68,26 @@ mod tests {
         let mut raw_config  = default_test_config(StackMode::Bs);
 
         // Update default config to suit our needs
-        raw_config.rfio.driver = Some("lime".to_string());
+        raw_config.phy_io.backend = PhyBackend::SoapySdr;
+        let mut soapy_cfg = CfgSoapySdr::default();
+        soapy_cfg.ul_freq = UL_FREQ;
+        soapy_cfg.dl_freq = DL_FREQ;
+        soapy_cfg.io_cfg.iocfg_limesdr = Some(LimeSdrCfg { 
+            rx_ant: None, 
+            tx_ant: None, 
+            rx_gain_lna: None, 
+            rx_gain_tia: None, 
+            rx_gain_pga: None, 
+            tx_gain_pad: None, 
+            tx_gain_iamp: None 
+        });
+        raw_config.phy_io.soapysdr = Some(soapy_cfg);
 
         let mut test = ComponentTest::new(raw_config);
-        let config = test.config.clone();
 
         // Create PHY and insert it into the message router
-        let phy = build_soapysdr_phy(&config);
+        let rxdev = RxTxDevSoapySdr::new(&test.config);
+        let phy = PhyBs::new(test.config.clone(), rxdev);
         test.register_entity(phy);
         test.run_ticks(None);
     }
@@ -86,16 +101,23 @@ mod tests {
         let mut raw_config  = default_test_config(StackMode::Bs);
 
         // Update default config to suit our needs
-        raw_config.rfio.input_type = RfIoType::Soapysdr;
-        raw_config.rfio.driver = Some("uhd".to_string());
-        raw_config.rfio.rx_freq = Some(UL_FREQ);
-        raw_config.rfio.tx_freq = Some(DL_FREQ);
+        raw_config.phy_io.backend = PhyBackend::SoapySdr;
+        let mut soapy_cfg = CfgSoapySdr::default();
+        soapy_cfg.ul_freq = UL_FREQ;
+        soapy_cfg.dl_freq = DL_FREQ;
+        soapy_cfg.io_cfg.iocfg_usrpb2xx = Some(UsrpB2xxCfg { 
+            rx_ant: None, 
+            tx_ant: None, 
+            rx_gain_pga: None, 
+            tx_gain_pga: None, 
+        });
+        raw_config.phy_io.soapysdr = Some(soapy_cfg);
 
         let mut test = ComponentTest::new(raw_config);
-        let config = test.config.clone();
 
         // Create PHY and insert it into the message router
-        let phy = build_soapysdr_phy(&config);
+        let rxdev = RxTxDevSoapySdr::new(&test.config);
+        let phy = PhyBs::new(test.config.clone(), rxdev);
         test.register_entity(phy);
         test.run_ticks(None);
     }

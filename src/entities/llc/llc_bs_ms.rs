@@ -16,7 +16,7 @@ use crate::entities::llc::pdus::bl_data::BlData;
 use crate::entities::llc::pdus::bl_udata::BlUdata;
 use crate::entities::TetraEntityTrait;
 use crate::saps::sapmsg::{SapMsg, SapMsgInner};
-use crate::config::config::*;
+use crate::config::stack_config::*;
 use crate::unimplemented_log;
 
 pub struct AckData {

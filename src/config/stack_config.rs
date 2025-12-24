@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 use serde::Deserialize;
 
-use crate::{common::freqs::FreqInfo, entities::lmac::components::scramble::scrambler};
+use crate::{common::freqs::FreqInfo, config::stack_config_soapy::CfgSoapySdr, entities::lmac::components::scramble::scrambler};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -11,58 +11,34 @@ pub enum StackMode {
     Mon,
 }
 
-/// The PHY layer input type
+/// The PHY layer backend type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub enum RfIoType {
+pub enum PhyBackend {
     Undefined,
     None,
-    Soapysdr,
-    File,
+    SoapySdr
 }
 
+/// PHY layer I/O configuration
 #[derive(Debug, Clone, Deserialize)]
-pub struct CfgRfIoInfo {
-    /// Set to: soapysdr or file
-    pub input_type: RfIoType,
-
-    /// For type file: set to path to input file
+pub struct CfgPhyIo {
+    /// Backend type: Soapysdr, File, or None
+    pub backend: PhyBackend,
+    
+    /// For File backend: path to input file
     pub input_file: Option<String>,
     
-    /// For type soapysdr: set to "uhd", "limesdr", etc.
-    pub driver: Option<String>,
-    /// For type soapysdr: set to rx frequency in Hz
-    pub rx_freq: Option<f64>,
-    /// For type soapysdr: set to tx frequency in Hz
-    pub tx_freq: Option<f64>,
-    /// For type soapysdr: SDR PPM tuning error (SDR specific) 
-    pub ppm_err: Option<f64>,
-    // /// For type soapysdr: set to RX gain in dB
-    // pub rx_gain: Option<f32>,
-    // /// For type soapysdr: set to TX gain in dB
-    // pub tx_gain: Option<f32>,
-    // /// For type soapysdr: set to SDR sample rate in Hz
-    // pub sample_rate: Option<u32>,
-    // /// For type soapysdr: set to antenna name, e.g. "TX/RX", "RX2", etc.
-    // pub antenna: Option<String>,
-    // /// For type soapysdr: set to channel number, e.g. 0, 1, etc.
-    // pub channel: Option<u32>
+    /// For Soapysdr backend: SoapySDR configuration
+    pub soapysdr: Option<CfgSoapySdr>,
 }
 
-impl Default for CfgRfIoInfo {
+impl Default for CfgPhyIo {
     fn default() -> Self {
         Self {
-            input_type: RfIoType::Undefined,
+            backend: PhyBackend::Undefined,
             input_file: None,
-            driver: None,
-            rx_freq: None,
-            tx_freq: None,
-            ppm_err: None,
-            // rx_gain: None,
-            // tx_gain: None,
-            // sample_rate: None,
-            // antenna: None,
-            // channel: None,
+            soapysdr: None,
         }
     }
 }
@@ -201,7 +177,7 @@ pub struct StackConfig {
     pub stack_mode: StackMode,
 
     #[serde(default)]
-    pub rfio: CfgRfIoInfo,
+    pub phy_io: CfgPhyIo,
 
     /// Network info is REQUIRED - no default provided
     pub net: CfgNetInfo,
@@ -219,7 +195,7 @@ impl StackConfig {
     pub fn new(mode: StackMode, mcc: u16, mnc: u16) -> Self {
         StackConfig {
             stack_mode: mode,
-            rfio: CfgRfIoInfo::default(),
+            phy_io: CfgPhyIo::default(),
             net: CfgNetInfo { mcc, mnc },
             cell: CfgCellInfo::default(),
         }
@@ -229,41 +205,43 @@ impl StackConfig {
     pub fn validate(&self) -> Result<(), &str> {
 
         // Check input device settings
-        match self.rfio.input_type {
+        match self.phy_io.backend {
 
-            RfIoType::Soapysdr => {
-                match &self.rfio.driver {
-                    Some(val) => {
-                        let supported_drivers = ["uhd", "limesdr", "bladeRF"];
-                        if !supported_drivers.contains(&val.as_str()) {
-                            return Err("unsupported rfio driver for Soapysdr input_type");
-                        }
-                    },
-                    None => return Err("rfio driver must be set for Soapysdr input_type"),
+            PhyBackend::SoapySdr => {
+                let Some(ref soapy_cfg) = self.phy_io.soapysdr else {
+                    return Err("soapysdr configuration must be provided for Soapysdr backend");
+                };
+                
+                // Validate that exactly one hardware configuration is present
+                let config_count = [
+                    soapy_cfg.io_cfg.iocfg_usrpb2xx.is_some(),
+                    soapy_cfg.io_cfg.iocfg_limesdr.is_some(),
+                    soapy_cfg.io_cfg.iocfg_sxceiver.is_some(),
+                ].iter().filter(|&&x| x).count();
+                if config_count != 1 {
+                    return Err("soapysdr backend requires exactly one hardware configuration (iocfg_usrpb2xx, iocfg_limesdr, or iocfg_sxceiver)");
                 }
             },
-            RfIoType::Undefined => {
-                return Err("rfio input_type must be defined");
+            PhyBackend::None => {}, // For testing
+            PhyBackend::Undefined => {
+                return Err("phy_io backend must be defined");
             },
-            RfIoType::None => {}, // For testing
-            _ => {
-                return Err("Currently unsupported rfio.input_type");
-            } 
         };
 
         // Sanity check on main carrier property fields in SYSINFO
-        // if self.stack_mode == StackMode::Bs && self.rfio.input_type == RfIoType::Soapysdr {
-        if self.rfio.input_type == RfIoType::Soapysdr {
-            // Check consistency of RF frequency settings with TETRA stack settings
-            let Some(ul_freq) = self.rfio.rx_freq else {
-                return Err("RFIO Rx frequency must be set for BS stack mode");
-            };
-            let Some(dl_freq) = self.rfio.tx_freq else {
-                return Err("RFIO Tx frequency must be set for BS stack mode");
-            };
+        if self.phy_io.backend == PhyBackend::SoapySdr {
+            let soapy_cfg = self.phy_io.soapysdr.as_ref().expect("SoapySdr config must be set for SoapySdr PhyIo");
 
-            let Ok(f1) = FreqInfo::from_dlul_freqs(dl_freq as u32, ul_freq as u32) else {
-                return Err("Invalid RFIO DL/UL frequencies");
+            // Check consistency of RF frequency settings with TETRA stack settings
+            // let Some(ul_freq) = soapy_cfg.ul_freq else {
+            //     return Err("PhyIo SoapySdr UL frequency must be set for BS stack mode");
+            // };
+            // let Some(dl_freq) = soapy_cfg.dl_freq else {
+            //     return Err("PhyIo SoapySdr DL frequency must be set for BS stack mode");
+            // };
+
+            let Ok(f1) = FreqInfo::from_dlul_freqs(soapy_cfg.dl_freq as u32, soapy_cfg.ul_freq as u32) else {
+                return Err("Invalid PhyIo DL/UL frequencies");
             };
             let     Ok(f2) = FreqInfo::from_sysinfo_settings(
                     self.cell.freq_band, 
@@ -275,19 +253,19 @@ impl StackConfig {
             };
 
             if f1.band != f2.band {
-                return Err("RFIO Tx frequency band does not match cell info band");
+                return Err("PhyIo Tx frequency band does not match cell info band");
             };
             if f1.carrier != f2.carrier {
-                return Err("RFIO Tx frequency carrier does not match cell info carrier");
+                return Err("PhyIo Tx frequency carrier does not match cell info carrier");
             };
             if f1.freq_offset != f2.freq_offset {
-                return Err("RFIO Tx frequency offset does not match cell info offset");
+                return Err("PhyIo Tx frequency offset does not match cell info offset");
             };
             if f1.reverse_operation != f2.reverse_operation {
-                return Err("RFIO Tx frequency reverse operation does not match cell info reverse operation");
+                return Err("PhyIo Tx frequency reverse operation does not match cell info reverse operation");
             };
             if f1.duplex_spacing != f2.duplex_spacing {
-                return Err("RFIO Tx frequency duplex spacing does not match cell info duplex spacing");
+                return Err("PhyIo Tx frequency duplex spacing does not match cell info duplex spacing");
             }
         }
 

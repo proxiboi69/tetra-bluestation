@@ -12,7 +12,7 @@ use crate::common::tetra_common::Sap;
 use crate::common::tetra_entities::TetraEntity;
 use crate::entities::TetraEntityTrait;
 use crate::saps::sapmsg::{SapMsg, SapMsgInner};
-use crate::config::config::*;
+use crate::config::stack_config::*;
 use crate::unimplemented_log;
 
 pub struct Mle {

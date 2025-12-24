@@ -33,15 +33,4 @@ pub const SEQ_SYNC: u64 = 0b11000001100111001110100111000001100111; // 38 bits
 pub const SEQ_SYNC_LEN: usize = 38;
 
 /* 9.4.4.3.5 Tail bits */
-// pub const T_BITS: u64 = 0b1100;
-
-// Shift dists for training sequences
-// pub const SHIFT_DIST_22: u32 = 64-SEQ_NORM1.len() as u32;
-// pub const SHIFT_DIST_30: u32 = 64-SEQ_EXT.len() as u32;
-// pub const SHIFT_DIST_38: u32 = 64-SEQ_SYNC.len() as u32;
-
-pub const MASK_22: u64 = 0x3FFFFF;
-pub const MASK_30: u64 = 0x3FFFFFFF;
-pub const MASK_38: u64 = 0x3FFFFFFFFF;
-
-
+pub const T_BITS: u64 = 0b1100;

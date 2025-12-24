@@ -1,5 +1,5 @@
 use crate::common::freqs::FreqInfo;
-use crate::config::config::{CfgCellInfo, CfgNetInfo, CfgRfIoInfo, RfIoType, SharedConfig, StackConfig, StackMode, StackState};
+use crate::config::stack_config::{CfgCellInfo, CfgNetInfo, CfgPhyIo, PhyBackend, SharedConfig, StackConfig, StackMode, StackState};
 use crate::common::messagerouter::MessageRouter;
 use crate::entities::cmce::cmce_ms::CmceMs;
 use crate::entities::TetraEntityTrait;
@@ -25,7 +25,6 @@ use super::sink::Sink;
 /// Creates a default config for testing. It can still be modified as needed
 /// before passing it to the ComponentTest constructor
 pub fn default_test_config(stack_mode: StackMode) -> StackConfig {
-    // , rfio_type: RfIoType, param: &'static str
     let net_info = CfgNetInfo { mcc: 204, mnc: 1337 };
     let mut cell_info = CfgCellInfo::default();
 
@@ -43,15 +42,15 @@ pub fn default_test_config(stack_mode: StackMode) -> StackConfig {
     cell_info.freq_offset = 0; // TODO FIXME
     cell_info.duplex_spacing_setting = FreqInfo::get_duplex_setting(freqinfo.band, freqinfo.duplex_spacing).unwrap();
     cell_info.reverse_operation = freqinfo.reverse_operation;
-    let mut rfio_info = CfgRfIoInfo::default();      
+    let mut phy_io = CfgPhyIo::default();      
 
-    // These tests don't support a PHY component, so we set RFIO type to None
-    rfio_info.input_type = RfIoType::None;
+    // These tests don't support a PHY component, so we set backend to None
+    phy_io.backend = PhyBackend::None;
     
     // Put together components and return this proto config
     StackConfig {
         stack_mode,
-        rfio: rfio_info,
+        phy_io,
         net: net_info,
         cell: cell_info,
     }

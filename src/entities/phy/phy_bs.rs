@@ -1,7 +1,8 @@
 
 use std::panic;
-use crate::config::config::SharedConfig;
+use crate::config::stack_config::SharedConfig;
 use crate::common::messagerouter::MessageQueue;
+use crate::entities::phy::components::burst_consts::*;
 use crate::entities::phy::components::train_consts::TIMESLOT_TYPE4_BITS;
 use crate::saps::sapmsg::{SapMsg, SapMsgInner};
 use crate::saps::tp::TpUnitdataInd;
@@ -17,10 +18,6 @@ use crate::entities::umac::subcomp::bs_channel_scheduler::MACSCHED_TX_AHEAD;
 
 use super::traits::rxtx_dev::{RxTxDev, TxSlotBits};
 use super::components::phy_io_file::PhyIoFile;
-
-const RX_BUF_SIZE: usize = 2048*4;
-const MAX_RXBLOCK_SIZE: usize = 2048;
-const MAX_RXBURSTSYNC_BLOCK: usize = MAX_RXBLOCK_SIZE*4;
 
 pub struct PhyBs<D: RxTxDev> {
 
@@ -74,17 +71,6 @@ impl <D: RxTxDev>PhyBs<D> {
     }
 
     fn split_rxslot_and_send_to_lmac(queue: &mut MessageQueue, burst: &RxBurstBits<'_>) {
-
-        const NUB_BITS: usize =              4+216+22+216+4;
-        const NUB_BLK_BITS: usize =          216;
-        const NUB_BLK1_OFFSET: usize =       4;
-        const NUB_BLK2_OFFSET: usize =       4+216+22;
-        const CUB_BITS: usize =              4+84+30+84+4;
-        const CUB_BLK_BITS: usize =          84;
-        const CUB_BLK1_OFFSET: usize =       4;
-        const CUB_BLK2_OFFSET: usize =       4+84+30;
-
-        const TAIL_BITS: [u8; 4] = [1u8, 1u8, 0u8, 0u8];
 
         let train_seq = burst.train_type;
         match train_seq {
@@ -208,7 +194,11 @@ impl <D: RxTxDev>PhyBs<D> {
 
         // Transmit slot and receive rx data (if any trainseq was found)
         // This function is blocking and the source of timing sync in the whole stack
+        // let tick_done = std::time::Instant::now();
         let rx = self.rxtxdev.rxtx_timeslot(&tx_slot).expect("Got error from rxtx_timeslot");
+        // let new_tick_start = std::time::Instant::now();
+        // let elapsed = new_tick_start.duration_since(tick_done);
+        // tracing::debug!("rxtx_timeslot: tick_done {:?}, new_tick_start {:?}, elapsed {:?}", tick_done, new_tick_start, elapsed);
         
         // Process received slot (either full, subslot1 or subslot2)
         // In exceptional cases, we might receive multiple slots (multiple possible detected bursts in one timeslot)

@@ -2,6 +2,8 @@
 //! between SDR device and modulator/demodulator code.
 
 use rustfft;
+use crate::config::stack_config::{SharedConfig, StackMode};
+use crate::entities::phy::components::rxtxdev_soapysdr;
 use crate::entities::phy::traits::rxtx_dev::{RxTxDev, RxTxDevError, TxSlotBits, RxSlotBits};
 
 use super::demodulator;
@@ -40,21 +42,74 @@ pub struct RxTxDevSoapySdr {
 type FftPlanner = rustfft::FftPlanner<RealSample>;
 
 impl RxTxDevSoapySdr {
-    pub fn new(
-        sdr_config: SdrConfig,
-        phy_config: PhyConfig,
-    ) -> Self {
+    // pub fn new(
+    //     sdr_config: SdrConfig,
+    //     phy_config: PhyConfig,
+    // ) -> Self {
+    //     let mut fft_planner = rustfft::FftPlanner::new();
+
+    //     let mut sdr = soapyio::SoapyIo::new(
+    //         sdr_config.dev_args,
+    //         sdr_config.rx_freq,
+    //         sdr_config.tx_freq,
+    //         if !phy_config.monitor_frequencies.is_empty() {
+    //             soapyio::Mode::Mon
+    //         } else {
+    //             soapyio::Mode::Bs
+    //         },
+    //     ).unwrap();
+
+    //     Self {
+    //         rx_dsp: if sdr.rx_enabled() {
+    //             Some(RxDsp::new(&mut fft_planner, &mut sdr, &phy_config))
+    //         } else { None },
+
+    //         tx_dsp: if sdr.tx_enabled() {
+    //             Some(TxDsp::new(&mut fft_planner, &mut sdr, &phy_config))
+    //         } else { None },
+
+    //         sdr,
+    //     }
+    // }
+
+    pub fn new(cfg: &SharedConfig) -> Self {
+
         let mut fft_planner = rustfft::FftPlanner::new();
 
+        // TODO FIXME we can remove the soapyio::mode enum and replace it by the globally used StackMode
+        let mode = match cfg.config().stack_mode {
+            StackMode::Bs => soapyio::Mode::Bs,
+            StackMode::Ms => soapyio::Mode::Ms,
+            StackMode::Mon => soapyio::Mode::Mon,
+        };
+
+        // TODO FIXME currently no MS and MON support in the below statement; need to fix
+        let config_guard = cfg.config();
+        let soapy_cfg = config_guard.as_ref().phy_io.soapysdr.as_ref().expect("Soapysdr config must be set for Soapysdr PhyIo");
+        
+        let (dl_corrected, dl_err) = soapy_cfg.dl_freq_corrected();
+        let (ul_corrected, ul_err) = soapy_cfg.ul_freq_corrected();
+
+        tracing::info!(
+            "Freqs: DL / UL: {:.6} MHz / {:.6} MHz   PPM: {:.2} -> err {:.0} / {:.0} hz, adj {:.6} MHz / {:.6} MHz",
+            soapy_cfg.dl_freq / 1e6,
+            soapy_cfg.ul_freq / 1e6,
+            soapy_cfg.ppm_err.unwrap_or(0.0),
+            dl_err,
+            ul_err,
+            dl_corrected / 1e6,
+            ul_corrected / 1e6
+        );
+
+        let phy_config = rxtxdev_soapysdr::PhyConfig {
+            bs_dl_frequencies: &[dl_corrected],
+            bs_ul_frequencies: &[ul_corrected],
+            ..Default::default()
+        };
+
         let mut sdr = soapyio::SoapyIo::new(
-            sdr_config.dev_args,
-            sdr_config.rx_freq,
-            sdr_config.tx_freq,
-            if !phy_config.monitor_frequencies.is_empty() {
-                soapyio::Mode::Mon
-            } else {
-                soapyio::Mode::Bs
-            },
+            cfg, 
+            mode
         ).unwrap();
 
         Self {
@@ -67,7 +122,7 @@ impl RxTxDevSoapySdr {
             } else { None },
 
             sdr,
-        }
+        }        
     }
 
     /// Process a block of received signal.
@@ -494,95 +549,7 @@ impl ModulatorChannel {
     }
 }
 
-
 struct MonitorDlUlPair {
     dl: DemodulatorChannel,
     ul: Option<DemodulatorChannel>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::common::{debug, tdma_time::TdmaTime};
-
-    #[test]
-    #[ignore] // Requires LimeSDR hardware
-    pub fn test_monitor() {
-        debug::setup_logging_verbose();
-        let mut phy = RxTxDevSoapySdr::new(
-            SdrConfig {
-                dev_args: &[("driver", "lime")],
-                rx_freq: Some(387e6),
-                tx_freq: None,
-            },
-            PhyConfig {
-                monitor_frequencies: &[(391.0625e6, Some(381.0625e6))],
-                ..Default::default()
-            },
-        );
-        loop {
-            match phy.rxtx_timeslot(&[]) {
-                Ok(rx) => {
-                    tracing::info!("{:?}", rx);
-                },
-                Err(_) => break,
-            }
-        }
-    }
-
-    /// Test for correct timing relationship between TX and RX.
-    /// Receiver is tuned on transmit frequency.
-    /// Modulator runs in downlink mode but transmits bursts
-    /// with the uplink training sequence in the nominal position.
-    #[test]
-    #[ignore] // requires hardware
-    pub fn test_timing() {
-        debug::setup_logging_verbose();
-        const TEST_BITS: [u8; 510] = [
-            0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,
-            1,1,0,1,0,0,0,0,1,1,1,0,1,0,0,1,1,1,0,1,0,0,
-            1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,
-        ];
-        // Due to 2 slots offset between UL and DL slot numbering,
-        // time difference will actually be 2 slots less than TX_DELTA.
-        const TX_DELTA: i32 = 6;
-        let carrier_freq = 433.9e6;
-        let sdr_freq = carrier_freq - 20000.0;
-        let mut phy = RxTxDevSoapySdr::new(
-            SdrConfig {
-                dev_args: &[("driver", "lime")],
-                //dev_args: &[("driver", "sx")],
-                //dev_args: &[("driver", "remote"), ("remote:driver", "sx")],
-                rx_freq: Some(sdr_freq),
-                tx_freq: Some(sdr_freq),
-            },
-            PhyConfig {
-                bs_ul_frequencies: &[carrier_freq],
-                bs_dl_frequencies: &[carrier_freq],
-                ..Default::default()
-            },
-        );
-        let mut next_tx_slot = TdmaTime::default().add_timeslots(TX_DELTA-1);
-        loop {
-            match phy.rxtx_timeslot(&[TxSlotBits {
-                time: next_tx_slot,
-                slot: Some(&TEST_BITS[..]),
-                ..Default::default()
-            }]) {
-                Ok(rx) => {
-                    if let Some(rx) = &rx[0] {
-                        tracing::info!("rxtx_timeslot returned slot {}, bits correct: {}",
-                            rx.time,
-                            rx.slot.bits == &TEST_BITS[34 .. 34+4+216+22+216+4]
-                        );
-                        //tracing::debug!("Full slot: {:?}", rx.slot);
-                        //tracing::debug!("Subslot1:  {:?}", rx.subslot1);
-                        //tracing::debug!("Subslot2:  {:?}", rx.subslot2);
-                        next_tx_slot = rx.time.add_timeslots(TX_DELTA);
-                    }
-                },
-                Err(_) => break,
-            }
-        }
-    }
 }

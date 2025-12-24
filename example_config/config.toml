@@ -1,0 +1,145 @@
+# TETRA BlueStation example configuration file
+# This is an example configuration file for the TETRA base station stack
+# DO NOT RUN without editing to stay within legal limits of your jurisdiction
+
+config_version = "0.2"
+
+# Stack operation mode: "Bs" (Base Station), "Ms" (Mobile Station), or "Mon" (Monitor)
+stack_mode = "Bs"
+
+###############################################################################
+
+# PHY layer i/o configuration
+
+[phy_io]
+
+# Input type: set to SoapySdr. May allow for future non-soapy RF backends.
+backend = "SoapySdr"
+
+[phy_io.soapysdr]
+# Transmit tx(dl) and rx(ul) frequencies in Hz
+# !!! Make sure to also edit all related fields in the cell_info section to fit this frequency. 
+tx_freq = 438025000
+rx_freq = 433025000
+ppm_err = 0             # Adjust if your SDR has a non-negligible tuning error
+
+# Optional file i/o to save to file generated and received RF data
+# dl_output_file = "./dl_output.bin"    # Uncomment to save DL RF samples to file
+# ul_output_file = "./ul_output.bin"    # Uncomment to save UL RF samples to file
+
+# Optional file i/o to override generated and/or received RF data
+# dl_input_file = "./dl_input.bin"      # Uncomment to read DL RF samples from file instead of SDR
+# ul_input_file = "./ul_input.bin"      # Uncomment to read UL RF samples from file instead of SDR
+
+# Sane defaults for LimeSDR
+# [phy_io.soapysdr.iocfg_limesdr]
+# rx_ant = "LNAL"
+# tx_ant = "BAND1"
+# rx_gain_lna = 20.0
+# rx_gain_tia = 10.0
+# rx_gain_pga = 10.0
+# tx_gain_pad = 52.0
+# tx_gain_iamp = 3.0
+
+# Sane defaults for LimeSDR Mini v2
+# [phy_io.soapysdr.iocfg_limesdr]
+# rx_ant = "LNAW"
+# tx_ant = "BAND2"
+# rx_gain_lna = 18.0
+# rx_gain_tia = 6.0
+# rx_gain_pga = 0.0
+# tx_gain_pad = 30.0
+# tx_gain_iamp = 6.0
+
+# Sane defaults for SXceiver
+# [phy_io.soapysdr.iocfg_sxceiver]
+# rx_ant = "RX"
+# tx_ant = "TX"
+# rx_gain_lna = 42.0
+# rx_gain_pga = 16.0
+# tx_gain_dac = 9.0
+# tx_gain_mixer = 30.0
+
+# Sane defaults for Ettus USRP B210 (and probably B200)
+[phy_io.soapysdr.iocfg_usrpb2xx]
+rx_ant = "TX/RX"
+tx_ant = "TX/RX"
+rx_gain_pga = 50.0
+tx_gain_pga = 35.0
+
+###############################################################################
+
+# Network Information
+[net_info]
+# Mobile Country Code (MCC) - identifies your country
+mcc = 204  # Netherlands
+
+# Mobile Network Code (MNC) - identifies the TETRA network
+# MAKE SURE MNC MAY BE USED, CONSULT RELEVANT AUTHORITIES IF NEEDED
+mnc = 1337  
+
+# Cell Information
+[cell_info]
+
+# These parameters specify the DL and UL frequencies
+# Read the spec if in doubt. Make sure these match the tx/rx freqs as given above
+# See ETSI TS 100 392-15 V1.5.1 Clause 6: Duplex spacing
+freq_band = 4               # 400MHz band
+main_carrier = 1521         # + 1521 * 25kHz = 38250kHz
+duplex_spacing = 4          # Use 5MHz spacing between ul and dl (for 400 MHz band)
+freq_offset = 0             # No further offset to the ul/dl frequencies
+reverse_operation = false   # UL = DL - duplex_spacing
+
+# Location Area identifier
+location_area = 2
+
+# Colour code (0-3), helps distinguish between adjacent cells on the same frequency
+colour_code = 1
+
+###############################################################################
+
+# OPTIONAL: Additional cell parameters
+# WIP; uncomment and configure as needed, many are not currently implemented, 
+# defaults should be fine
+
+# Neighbor cell broadcast settings
+# neighbor_cell_broadcast = 0
+
+# Cell load (Channel Allocation) - current load
+# cell_load_ca = 0
+
+# Late entry support - allows joining ongoing group calls
+# late_entry_supported = true
+
+# Subscriber class - defines which MS classes can access this cell
+# subscriber_class = 0xFFFF
+
+# Registration and mobility features
+# registration = true
+# deregistration = true
+# priority_cell = false
+# no_minimum_mode = false
+# migration = false
+
+# Service availability flags
+# system_wide_services = true  # If false, radios will operate in fallback mode
+# voice_service = true
+# circuit_mode_data_service = true
+# sndcp_service = true
+# aie_service = false
+# advanced_link = false
+
+# System code (0-15) - identifies the TETRA system version
+# system_code = 0
+
+# Sharing mode for the main control channel
+# sharing_mode = 0
+
+# Reserved frames for time slot allocation
+# ts_reserved_frames = 0
+
+# Discontinuous Transmission (DTX) on user plane
+# u_plane_dtx = false
+
+# Frame 18 extension support
+# frame_18_ext = false

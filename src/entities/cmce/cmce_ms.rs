@@ -1,4 +1,4 @@
-use crate::config::config::SharedConfig;
+use crate::config::stack_config::SharedConfig;
 use crate::common::messagerouter::MessageQueue;
 use crate::saps::sapmsg::{SapMsg, SapMsgInner};
 use crate::common::tetra_entities::TetraEntity;

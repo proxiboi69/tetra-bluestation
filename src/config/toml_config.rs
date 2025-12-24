@@ -1,4 +1,3 @@
-// config_toml.rs
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, BufReader};
@@ -7,25 +6,31 @@ use std::path::Path;
 use serde::Deserialize;
 use toml::Value;
 
-use crate::config::config::{CfgRfIoInfo, RfIoType};
+use crate::config::stack_config::{CfgPhyIo, PhyBackend};
 use crate::{
     CfgCellInfo, CfgNetInfo, SharedConfig, StackConfig, StackMode, StackState,
 };
+use super::stack_config_soapy::{CfgSoapySdr, LimeSdrCfg, SXceiverCfg, UsrpB2xxCfg};
 
 /// Build `SharedConfig` from a TOML configuration file
 pub fn from_toml_str(toml_str: &str) -> Result<SharedConfig, Box<dyn std::error::Error>> {
-    let root: TomlRoot = toml::from_str(toml_str)?;
+    let root: TomlConfigRoot = toml::from_str(toml_str)?;
 
     // Various sanity checks
-    if !root.config_version.eq("0.2") {
+    if !root.config_version.eq("0.3") {
         tracing::warn!("Unrecognized config_version: {}", root.config_version);
     }
     if !root.extra.is_empty() {
         tracing::warn!("Unrecognized top-level fields: {:?}", sorted_keys(&root.extra));
     }
-    if let Some(ref ni) = root.rfio_info {
-        if !ni.extra.is_empty() {
-            tracing::warn!("Unrecognized fields in rfio_info: {:?}", sorted_keys(&ni.extra));
+    if let Some(ref phy) = root.phy_io {
+        if !phy.extra.is_empty() {
+            tracing::warn!("Unrecognized fields in phy_io: {:?}", sorted_keys(&phy.extra));
+        }
+        if let Some(ref soapy) = phy.soapysdr {
+            if !soapy.extra.is_empty() {
+                tracing::warn!("Unrecognized fields in phy_io.soapysdr: {:?}", sorted_keys(&soapy.extra));
+            }
         }
     }
     if let Some(ref ni) = root.net_info {
@@ -44,11 +49,6 @@ pub fn from_toml_str(toml_str: &str) -> Result<SharedConfig, Box<dyn std::error:
         }
     }
 
-    // Require stack_mode to be explicitly set
-    let Some(stack_mode) = root.stack_mode else {
-        return Err("stack_mode is required in config file".into());
-    };
-
     // Require net_info to be explicitly set
     let Some(net_info_dto) = root.net_info else {
         return Err("net_info section is required in config file".into());
@@ -62,14 +62,15 @@ pub fn from_toml_str(toml_str: &str) -> Result<SharedConfig, Box<dyn std::error:
 
     // Build config from required and optional values
     let mut cfg = StackConfig {
-        stack_mode,
-        rfio: CfgRfIoInfo::default(),
+        stack_mode: root.stack_mode,
+        phy_io: CfgPhyIo::default(),
         net: CfgNetInfo { mcc, mnc },
         cell: CfgCellInfo::default(),
     };
 
-    if let Some(ni) = root.rfio_info {
-        apply_rfio_info_patch(&mut cfg.rfio, ni);
+    // Handle new phy_io structure
+    if let Some(phy) = root.phy_io {
+        apply_phy_io_patch(&mut cfg.phy_io, phy);
     }
 
     if let Some(ci) = root.cell_info {
@@ -107,18 +108,51 @@ pub fn from_file<P: AsRef<Path>>(path: P) -> Result<SharedConfig, Box<dyn std::e
     Ok(cfg)
 }
 
-fn apply_rfio_info_patch(dst: &mut CfgRfIoInfo, ni: RfioInfoDto) {
-    dst.input_type = ni.input_type;
-    dst.input_file = ni.input_file;
-    dst.driver = ni.driver;
-    dst.rx_freq = ni.rx_freq;
-    dst.tx_freq = ni.tx_freq;
-    dst.ppm_err = ni.ppm_err;
-    // dst.rx_gain = ni.rx_gain;
-    // dst.tx_gain = ni.tx_gain;
-    // dst.sample_rate = ni.sample_rate;
-    // dst.antenna = ni.antenna;
-    // dst.channel = ni.channel;
+fn apply_phy_io_patch(dst: &mut CfgPhyIo, src: PhyIoDto) {
+    dst.backend = src.backend;
+    dst.input_file = src.input_file;
+    
+    if let Some(soapy_dto) = src.soapysdr {
+        let mut soapy_cfg = CfgSoapySdr::default();
+        soapy_cfg.ul_freq = soapy_dto.rx_freq;
+        soapy_cfg.dl_freq = soapy_dto.tx_freq;
+        soapy_cfg.ppm_err = soapy_dto.ppm_err;
+        
+        // Apply hardware-specific configurations
+        if let Some(usrp_dto) = soapy_dto.iocfg_usrpb2xx {
+            soapy_cfg.io_cfg.iocfg_usrpb2xx = Some(UsrpB2xxCfg {
+                rx_ant: usrp_dto.rx_ant,
+                tx_ant: usrp_dto.tx_ant,
+                rx_gain_pga: usrp_dto.rx_gain_pga,
+                tx_gain_pga: usrp_dto.tx_gain_pga,
+            });
+        }
+        
+        if let Some(lime_dto) = soapy_dto.iocfg_limesdr {
+            soapy_cfg.io_cfg.iocfg_limesdr = Some(LimeSdrCfg {
+                rx_ant: lime_dto.rx_ant,
+                tx_ant: lime_dto.tx_ant,
+                rx_gain_lna: lime_dto.rx_gain_lna,
+                rx_gain_tia: lime_dto.rx_gain_tia,
+                rx_gain_pga: lime_dto.rx_gain_pga,
+                tx_gain_pad: lime_dto.tx_gain_pad,
+                tx_gain_iamp: lime_dto.tx_gain_iamp,
+            });
+        }
+        
+        if let Some(sx_dto) = soapy_dto.iocfg_sxceiver {
+            soapy_cfg.io_cfg.iocfg_sxceiver = Some(SXceiverCfg {
+                rx_ant: sx_dto.rx_ant,
+                tx_ant: sx_dto.tx_ant,
+                rx_gain_lna: sx_dto.rx_gain_lna,
+                rx_gain_pga: sx_dto.rx_gain_pga,
+                tx_gain_dac: sx_dto.tx_gain_dac,
+                tx_gain_mixer: sx_dto.tx_gain_mixer,
+            });
+        }
+        
+        dst.soapysdr = Some(soapy_cfg);
+    }
 }
 
 fn apply_cell_info_patch(dst: &mut CfgCellInfo, ci: CellInfoDto) {
@@ -214,11 +248,14 @@ fn sorted_keys(map: &HashMap<String, Value>) -> Vec<&str> {
 /// ----------------------- DTOs for input shape -----------------------
 
 #[derive(Deserialize)]
-struct TomlRoot {
+struct TomlConfigRoot {
     config_version: String,
-    stack_mode: Option<StackMode>,
-    rfio_info: Option<RfioInfoDto>,
-
+    stack_mode: StackMode,
+    
+    // New phy_io structure
+    #[serde(default)]
+    phy_io: Option<PhyIoDto>,
+    
     #[serde(default)]
     net_info: Option<NetInfoDto>,
 
@@ -233,21 +270,65 @@ struct TomlRoot {
 }
 
 #[derive(Deserialize)]
-struct RfioInfoDto {
-    pub input_type: RfIoType,
+struct PhyIoDto {
+    pub backend: PhyBackend,
+    
+    #[serde(default)]
     pub input_file: Option<String>,
-    pub driver: Option<String>,
-    pub rx_freq: Option<f64>,
-    pub tx_freq: Option<f64>,
-    pub ppm_err: Option<f64>,
-    pub rx_gain: Option<f32>,
-    pub tx_gain: Option<f32>,
-    pub sample_rate: Option<u32>,
-    pub antenna: Option<String>,
-    pub channel: Option<u32>,
+    
+    #[serde(default)]
+    pub soapysdr: Option<SoapySdrDto>,
 
     #[serde(flatten)]
     extra: HashMap<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct SoapySdrDto {
+    pub rx_freq: f64,
+    pub tx_freq: f64,
+    pub ppm_err: Option<f64>,
+    
+    #[serde(default)]
+    pub iocfg_usrpb2xx: Option<UsrpB2xxDto>,
+    
+    #[serde(default)]
+    pub iocfg_limesdr: Option<LimeSdrDto>,
+    
+    #[serde(default)]
+    pub iocfg_sxceiver: Option<SXceiverDto>,
+
+    #[serde(flatten)]
+    extra: HashMap<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct UsrpB2xxDto {
+    pub rx_ant: Option<String>,
+    pub tx_ant: Option<String>,
+    pub rx_gain_pga: Option<f64>,
+    pub tx_gain_pga: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct LimeSdrDto {
+    pub rx_ant: Option<String>,
+    pub tx_ant: Option<String>,
+    pub rx_gain_lna: Option<f64>,
+    pub rx_gain_tia: Option<f64>,
+    pub rx_gain_pga: Option<f64>,
+    pub tx_gain_pad: Option<f64>,
+    pub tx_gain_iamp: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct SXceiverDto {
+    pub rx_ant: Option<String>,
+    pub tx_ant: Option<String>,
+    pub rx_gain_lna: Option<f64>,
+    pub rx_gain_pga: Option<f64>,
+    pub tx_gain_dac: Option<f64>,
+    pub tx_gain_mixer: Option<f64>,
 }
 
 #[derive(Default, Deserialize)]

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
 
-    use crate::config::config::StackMode;
+    use crate::config::stack_config::StackMode;
     use crate::saps::sapmsg::{SapMsg, SapMsgInner};
     use crate::saps::tmv::enums::logical_chans::LogicalChannel;
     use crate::saps::tmv::TmvUnitdataInd;

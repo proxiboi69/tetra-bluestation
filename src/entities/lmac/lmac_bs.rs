@@ -1,7 +1,7 @@
 use crate::common::messagerouter::MessageQueue;
 use crate::entities::phy::enums::burst::{BurstType, PhyBlockNum, TrainingSequence};
 use crate::saps::sapmsg::{SapMsg, SapMsgInner};
-use crate::config::config::*;
+use crate::config::stack_config::*;
 use crate::saps::tmv::enums::logical_chans::LogicalChannel;
 use crate::saps::tmv::TmvUnitdataInd;
 use crate::saps::tp::{TpUnitdataInd, TpUnitdataReqSlot};

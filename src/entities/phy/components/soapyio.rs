@@ -1,9 +1,11 @@
 use soapysdr;
 
+use crate::config::stack_config::SharedConfig;
 use crate::entities::phy::traits::rxtx_dev::RxTxDevError;
 use super::dsp_types;
 use super::soapy_time::{ticks_to_time_ns, time_ns_to_ticks};
 use super::dsp_types::*;
+use super::soapy_defaults::SdrSettings;
 
 type StreamType = ComplexSample;
 
@@ -13,106 +15,6 @@ pub enum Mode {
     Ms, 
     Mon,
 }
-
-struct SdrSettings<'a> {
-    /// Name used to print which SDR was detected
-    pub name: &'a str,
-    /// Receive and transmit sample rate for TMO BS.
-    pub fs_bs: f64,
-    /// Receive and transmit sample rate for TMO monitor.
-    /// The sample rate needs to be high enough to receive
-    /// both downlink and uplink at the same time.
-    pub fs_monitor: f64,
-    /// Receive antenna
-    pub rx_ant:   Option<&'a str>,
-    /// Transmit antenna
-    pub tx_ant:   Option<&'a str>,
-    /// Receive gains
-    pub rx_gain: &'a[(&'a str, f64)],
-    /// Transmit gains
-    pub tx_gain: &'a[(&'a str, f64)],
-}
-
-
-/// Default settings for any other SDR
-const SDR_DEFAULTS: SdrSettings = SdrSettings {
-    name: "Unknown SDR device",
-    fs_bs: 512e3,
-    fs_monitor: 16384e3,
-    rx_ant: None,
-    tx_ant: None,
-    rx_gain: &[],
-    tx_gain: &[],
-};
-
-
-/// Settings for LimeSDR
-const SDR_SETTINGS_LIME: SdrSettings = SdrSettings {
-    name: "LimeSDR",
-    rx_ant: Some("LNAL"),
-    tx_ant: Some("BAND1"),
-    rx_gain: &[
-        ("LNA", 20.0),
-        ("TIA", 10.0),
-        ("PGA", 10.0),
-    ],
-    tx_gain: &[
-        ("PAD",  52.0),
-        ("IAMP",  3.0),
-    ],
-    ..SDR_DEFAULTS
-};
-
-
-/// Settings for LimeSDR Mini v2
-const SDR_SETTINGS_LIMEMINI_V2: SdrSettings = SdrSettings {
-    name: "LimeSDR Mini v2",
-    rx_ant: Some("LNAW"),
-    tx_ant: Some("BAND2"),
-    rx_gain: &[
-        ("TIA", 6.0),
-        ("LNA", 18.0),
-        ("PGA", 0.0),
-    ],
-    tx_gain: &[
-        ("PAD",  30.0),
-        ("IAMP",  6.0),
-    ],
-    ..SDR_DEFAULTS
-};
-
-/// Settings for SXceiver
-const SDR_SETTINGS_SX: SdrSettings = SdrSettings {
-    name: "SXceiver",
-    fs_bs: 600e3,
-    fs_monitor: 600e3, // monitoring is not really possible with SXceiver
-    rx_ant: Some("RX"),
-    tx_ant: Some("TX"),
-    rx_gain: &[
-        ("LNA", 42.0),
-        ("PGA", 16.0),
-    ],
-    tx_gain: &[
-        ("DAC",    9.0),
-        ("MIXER", 30.0),
-    ],
-};
-
-/// Settings for Ettus UHD USRP B200/B210
-const SDR_SETTINGS_USRP_B200: SdrSettings = SdrSettings {
-    name: "USRP B200/B210",
-    rx_ant: Some("TX/RX"),
-    tx_ant: Some("TX/RX"),
-    
-    rx_gain: &[
-        ("PGA", 50.0),  // 0 - 76 dB
-    ],
-    tx_gain: &[
-        ("PGA", 35.0),  // 0 - 76 dB
-    ],
-    ..SDR_DEFAULTS
-};
-
 
 pub struct RxResult {
     /// Number of samples read
@@ -128,7 +30,7 @@ pub struct SoapyIo {
     tx_fs: f64,
     /// Timestamp for the first sample read from SDR.
     /// This is subtracted from all following timestamps,
-    /// so that sample counter starts from 0 even if timestamp does not.
+    /// so that sample counter startsB210 from 0 even if timestamp does not.
     initial_time: Option<i64>,
     rx_next_count: SampleCount,
 
@@ -159,15 +61,49 @@ macro_rules! soapycheck {
 }
 
 impl SoapyIo {
+
+    /// Get gain value from config or use default value from SdrSettings
+    fn get_gain_or_default(gain_name: &str, cfg_val: Option<f64>, defaults: &SdrSettings) -> (String, f64) {
+        if let Some(val) = cfg_val {
+            (gain_name.to_string(), val)
+        } else {
+            defaults.rx_gain.iter()
+                .find(|(name, _)| name == gain_name)
+                .cloned()
+                .unwrap_or_else(|| (gain_name.to_string(), 0.0))
+        }
+    }
+
     pub fn new(
-        dev_args_str: &[(&str, &str)],
-        rx_freq: Option<f64>,
-        tx_freq: Option<f64>,
+        cfg: &SharedConfig, 
         mode: Mode
     ) -> Result<Self, soapysdr::Error> {
         let rx_ch = 0;
         let tx_ch = 0;
         let mut use_get_hardware_time = true;
+
+        let binding = cfg.config();
+        let soapy_cfg = binding.phy_io.soapysdr.as_ref().expect("SoapySdr config must be set for SoapySdr PhyIo");
+        let driver = soapy_cfg.io_cfg.get_soapy_driver_name();
+        let dev_args_str = &[("driver", driver)];
+        
+        // Get PPM corrected freqs  
+        let (dl_corrected, _) = soapy_cfg.dl_freq_corrected();
+        let (ul_corrected, _) = soapy_cfg.ul_freq_corrected();
+
+        let (rx_freq, tx_freq) = match mode {
+            Mode::Bs => (
+                Some(ul_corrected - 20000.0), // Offset RX center frequency from carrier frequency
+                Some(dl_corrected),
+            ),
+            Mode::Ms => (
+                Some(dl_corrected - 20000.0), // Offset RX center frequency from carrier frequency
+                Some(ul_corrected),
+            ),
+            Mode::Mon => {
+                unimplemented!("Monitor mode not implemented yet");
+            }
+        };
 
         let mut dev_args = soapysdr::Args::new();
         for (key, value) in dev_args_str {
@@ -189,24 +125,85 @@ impl SoapyIo {
         let rx_enabled = rx_freq.is_some();
         let tx_enabled = tx_freq.is_some();
 
-        let sdr_settings = match(
-            dev.driver_key()  .unwrap_or("".to_string()).as_str(),
-            dev.hardware_key().unwrap_or("".to_string()).as_str()
-        ) {
-            (_, "LimeSDR-USB") => &SDR_SETTINGS_LIME,
-            (_, "LimeSDR-Mini_v2") => &SDR_SETTINGS_LIMEMINI_V2,
-
-            ("sx", _) => &SDR_SETTINGS_SX,
-
-            ("b200", _) => &SDR_SETTINGS_USRP_B200,
-            
-            (_, _) => &SDR_DEFAULTS,
-        };
+        // Get default settings based on detected hardware
+        let driver_key = dev.driver_key().unwrap_or_default();
+        let hardware_key = dev.hardware_key().unwrap_or_default();
+        let mut sdr_settings = SdrSettings::get_defaults(&driver_key, &hardware_key);
         
-        tracing::info!("Got driver key {} hardware_key {}, selecting settings for {}", 
-                dev.driver_key()  .unwrap_or("-".to_string()).as_str(),
-                dev.hardware_key().unwrap_or("-".to_string()).as_str(),
-                sdr_settings.name);
+        // Apply user configuration overrides based on driver type
+        let driver = soapy_cfg.io_cfg.get_soapy_driver_name();
+        match driver {
+            "uhd" => {
+                if let Some(cfg) = &soapy_cfg.io_cfg.iocfg_usrpb2xx {
+                    // Override antenna settings if specified
+                    if let Some(ref ant) = cfg.rx_ant {
+                        sdr_settings.rx_ant = Some(ant.clone());
+                    }
+                    if let Some(ref ant) = cfg.tx_ant {
+                        sdr_settings.tx_ant = Some(ant.clone());
+                    }
+                    
+                    // Override gain settings
+                    sdr_settings.rx_gain = vec![
+                        Self::get_gain_or_default("PGA", cfg.rx_gain_pga, &sdr_settings),
+                    ];
+                    sdr_settings.tx_gain = vec![
+                        Self::get_gain_or_default("PGA", cfg.tx_gain_pga, &sdr_settings),
+                    ];
+                }
+            }
+            "limesdr" => {
+                if let Some(cfg) = &soapy_cfg.io_cfg.iocfg_limesdr {
+                    // Override antenna settings if specified
+                    if let Some(ref ant) = cfg.rx_ant {
+                        sdr_settings.rx_ant = Some(ant.clone());
+                    }
+                    if let Some(ref ant) = cfg.tx_ant {
+                        sdr_settings.tx_ant = Some(ant.clone());
+                    }
+                    
+                    // Override gain settings
+                    let mut rx_gains = Vec::new();
+                    rx_gains.push(Self::get_gain_or_default("LNA", cfg.rx_gain_lna, &sdr_settings));
+                    rx_gains.push(Self::get_gain_or_default("TIA", cfg.rx_gain_tia, &sdr_settings));
+                    rx_gains.push(Self::get_gain_or_default("PGA", cfg.rx_gain_pga, &sdr_settings));
+                    sdr_settings.rx_gain = rx_gains;
+                    
+                    let mut tx_gains = Vec::new();
+                    tx_gains.push(Self::get_gain_or_default("PAD", cfg.tx_gain_pad, &sdr_settings));
+                    tx_gains.push(Self::get_gain_or_default("IAMP", cfg.tx_gain_iamp, &sdr_settings));
+                    sdr_settings.tx_gain = tx_gains;
+                }
+            }
+            "sx" => {
+                if let Some(cfg) = &soapy_cfg.io_cfg.iocfg_sxceiver {
+                    // Override antenna settings if specified
+                    if let Some(ref ant) = cfg.rx_ant {
+                        sdr_settings.rx_ant = Some(ant.clone());
+                    }
+                    if let Some(ref ant) = cfg.tx_ant {
+                        sdr_settings.tx_ant = Some(ant.clone());
+                    }
+                    
+                    // Override gain settings
+                    let mut rx_gains = Vec::new();
+                    rx_gains.push(Self::get_gain_or_default("LNA", cfg.rx_gain_lna, &sdr_settings));
+                    rx_gains.push(Self::get_gain_or_default("PGA", cfg.rx_gain_pga, &sdr_settings));
+                    sdr_settings.rx_gain = rx_gains;
+                    
+                    let mut tx_gains = Vec::new();
+                    tx_gains.push(Self::get_gain_or_default("DAC", cfg.tx_gain_dac, &sdr_settings));
+                    tx_gains.push(Self::get_gain_or_default("MIXER", cfg.tx_gain_mixer, &sdr_settings));
+                    sdr_settings.tx_gain = tx_gains;
+                }
+            }
+            _ => {
+                tracing::warn!("Unknown SoapySDR driver '{}', using default settings", driver);
+            }
+        }
+
+        tracing::info!("Got driver key '{}' hardware_key '{}', using settings for {}", 
+                driver_key, hardware_key, sdr_settings.name);
 
         let samp_rate = match mode {
             Mode::Bs | Mode::Ms => sdr_settings.fs_bs,
@@ -235,14 +232,14 @@ impl SoapyIo {
             soapycheck!("set RX center frequency",
             dev.set_frequency(soapysdr::Direction::Rx, rx_ch, rx_freq.unwrap(), soapysdr::Args::new()));
 
-            if let Some(ant) = sdr_settings.rx_ant{
+            if let Some(ref ant) = sdr_settings.rx_ant {
                 soapycheck!("set RX antenna",
-                    dev.set_antenna(soapysdr::Direction::Rx, rx_ch, ant));
+                    dev.set_antenna(soapysdr::Direction::Rx, rx_ch, ant.as_str()));
             }
 
-            for (name, gain) in sdr_settings.rx_gain {
+            for (name, gain) in &sdr_settings.rx_gain {
                 soapycheck!("set RX gain",
-                    dev.set_gain_element(soapysdr::Direction::Rx, rx_ch, *name, *gain));
+                    dev.set_gain_element(soapysdr::Direction::Rx, rx_ch, name.as_str(), *gain));
             }
         }
 
@@ -250,14 +247,14 @@ impl SoapyIo {
             soapycheck!("set TX center frequency",
             dev.set_frequency(soapysdr::Direction::Tx, tx_ch, tx_freq.unwrap(), soapysdr::Args::new()));
 
-            if let Some(ant) = sdr_settings.tx_ant {
+            if let Some(ref ant) = sdr_settings.tx_ant {
                 soapycheck!("set TX antenna",
-                dev.set_antenna(soapysdr::Direction::Tx, tx_ch, ant));
+                    dev.set_antenna(soapysdr::Direction::Tx, tx_ch, ant.as_str()));
             }
 
-            for (name, gain) in sdr_settings.tx_gain {
+            for (name, gain) in &sdr_settings.tx_gain {
                 soapycheck!("set TX gain",
-                    dev.set_gain_element(soapysdr::Direction::Tx, tx_ch, *name, *gain));
+                    dev.set_gain_element(soapysdr::Direction::Tx, tx_ch, name.as_str(), *gain));
             }
         }
 

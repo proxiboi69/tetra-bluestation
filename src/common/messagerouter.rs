@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::config::config::SharedConfig;
+use crate::config::stack_config::SharedConfig;
 use crate::saps::sapmsg::SapMsg;
 use crate::common::tdma_time::TdmaTime;
 use crate::common::tetra_entities::TetraEntity;

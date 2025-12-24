@@ -1,4 +1,4 @@
-use crate::config::config::SharedConfig;
+use crate::config::stack_config::SharedConfig;
 use crate::common::messagerouter::MessageQueue;
 use crate::entities::cmce::enums::cmce_pdu_type_ul::CmcePduTypeUl;
 use crate::saps::sapmsg::{SapMsg, SapMsgInner};

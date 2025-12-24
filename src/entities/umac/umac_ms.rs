@@ -14,7 +14,7 @@ use crate::common::tetra_common::{Sap, Todo};
 use crate::common::tetra_entities::TetraEntity;
 use crate::entities::TetraEntityTrait;
 use crate::saps::sapmsg::{SapMsg, SapMsgInner};
-use crate::config::config::*;
+use crate::config::stack_config::*;
 use crate::entities::umac::enums::broadcast_type::BroadcastType;
 use crate::entities::umac::enums::mac_pdu_type::MacPduType;
 use crate::entities::umac::pdus::access_assign::AccessAssign;

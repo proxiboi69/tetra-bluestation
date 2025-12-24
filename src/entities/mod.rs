@@ -1,7 +1,7 @@
 use as_any::AsAny;
 use crate::common::messagerouter::MessageQueue;
 use crate::saps::sapmsg::SapMsg;
-use crate::config::config::SharedConfig;
+use crate::config::stack_config::SharedConfig;
 use crate::common::tdma_time::TdmaTime;
 use crate::common::tetra_entities::TetraEntity;
 
