@@ -500,7 +500,7 @@ impl BsChannelScheduler {
                             pdu.to_bitbuf(&mut buf);
                             buf.copy_bits(&mut sdu, sdu_bits);
                             write_fill_bits(&mut buf, Some(num_fill_bits));
-                            tracing::debug!("<- finalized {:?} sdu {}", pdu, sdu.dump_bin());
+                            tracing::debug!("-> finalized {:?} sdu {}", pdu, sdu.dump_bin());
                         },
                         
                         DlSchedElem::FragBuf(_) => {

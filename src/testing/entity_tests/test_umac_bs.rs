@@ -3,7 +3,7 @@ mod tests {
     use crate::{common::{bitbuffer::BitBuffer, debug, tdma_time::TdmaTime, tetra_common::Sap, tetra_entities::TetraEntity}, config::stack_config::StackMode, saps::{sapmsg::{SapMsg, SapMsgInner}, tmv::{TmvUnitdataInd, enums::logical_chans::LogicalChannel}}, testing::component_test::{ComponentTest, default_test_config}};
 
     #[test]
-    fn test_fragmented_sch_hu_and_sch_f() {
+    fn test_in_fragmented_sch_hu_and_sch_f() {
 
         // Receive SCH/HU containing MAC-ACCESS with fragmentation start
         // Then receive SCH-F containing MAC-END (UL)
@@ -62,7 +62,7 @@ mod tests {
 
 
     #[test]
-    fn test_fragmented_sch_hu_and_sch_hu() {
+    fn test_in_fragmented_sch_hu_and_sch_hu() {
 
         // Receive SCH/HU containing MAC-ACCESS with fragmentation start
         // Then receive SCH-HU containing MAC-END-HU
@@ -120,5 +120,18 @@ mod tests {
         assert_eq!(sink_msgs.len(), 1);
         tracing::info!("We have the expected CMCE message, but full validation of result not implemented");
     }
+
+    #[test]
+    fn test_out_fragmented_resource() {
+
+        // Test for UMAC and LLC
+        // First, we receive a fragmented resource, which is passed to LLC, then passed to MLE sink
+        // Then, we inject an MLE response message that is too large to fit a single timeslot.
+        // We'll see how the LLC builds a U-ADATA, 
+
+        assert!(false, "Test needs implementation");
+    }
+
+
 }
 
