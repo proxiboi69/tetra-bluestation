@@ -1,0 +1,18 @@
+[package]
+name = "tetra-entities"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tetra-core = { workspace = true }
+tetra-config = { workspace = true }
+tetra-saps = { workspace = true }
+tetra-pdus = { workspace = true }
+as-any = { workspace = true }
+num = { workspace = true }
+num-complex = { workspace = true }
+rustfft = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+crossbeam-channel = { workspace = true }
+soapysdr = { workspace = true }

@@ -100,6 +100,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 
 [[package]]
+name = "bluestation-bs"
+version = "0.3.1"
+dependencies = [
+ "clap",
+ "tetra-config",
+ "tetra-core",
+ "tetra-entities",
+ "tetra-saps",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -435,6 +449,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "pdu-tool"
+version = "0.3.1"
+dependencies = [
+ "clap",
+ "tetra-config",
+ "tetra-core",
+ "tetra-pdus",
+ "tetra-saps",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "peeking_take_while"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -684,22 +712,58 @@ dependencies = [
 ]
 
 [[package]]
-name = "tetra-bluestation"
-version = "0.3.0"
+name = "tetra-config"
+version = "0.3.1"
+dependencies = [
+ "serde",
+ "tetra-core",
+ "toml",
+]
+
+[[package]]
+name = "tetra-core"
+version = "0.3.1"
+dependencies = [
+ "serde",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tetra-entities"
+version = "0.3.1"
 dependencies = [
  "as-any",
- "clap",
  "crossbeam-channel",
  "num",
  "num-complex",
  "rand",
  "rustfft",
- "serde",
  "soapysdr",
- "toml",
+ "tetra-config",
+ "tetra-core",
+ "tetra-pdus",
+ "tetra-saps",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
+]
+
+[[package]]
+name = "tetra-pdus"
+version = "0.3.1"
+dependencies = [
+ "tetra-config",
+ "tetra-core",
+ "tetra-saps",
+ "tracing",
+]
+
+[[package]]
+name = "tetra-saps"
+version = "0.3.1"
+dependencies = [
+ "tetra-core",
+ "tracing",
 ]
 
 [[package]]
