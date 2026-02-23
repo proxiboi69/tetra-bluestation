@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use serde::Deserialize;
 use tetra_core::ranges::SortedDisjointSsiRanges;
@@ -19,8 +19,8 @@ pub struct CfgBrew {
     pub password: Option<String>,
     /// ISSI to register with the TetraPack server
     pub issi: u32,
-    /// Reconnection delay in seconds
-    pub reconnect_delay_secs: u64,
+    /// Reconnection delay
+    pub reconnect_delay: Duration,
     /// Extra initial jitter playout delay in frames (added on top of adaptive baseline)
     pub jitter_initial_latency_frames: u8,
 
@@ -84,7 +84,7 @@ pub fn apply_brew_patch(src: CfgBrewDto) -> CfgBrew {
         username: Some(src.username.to_string()),
         password: Some(src.password),
         issi: src.issi,
-        reconnect_delay_secs: src.reconnect_delay_secs,
+        reconnect_delay: Duration::from_secs(src.reconnect_delay_secs),
         jitter_initial_latency_frames: src.jitter_initial_latency_frames,
         whitelisted_ssi_ranges: whitelist,
         blacklisted_ssi_ranges: blacklist,

@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
+use tetra_config::stack_config_brew::CfgBrew;
 use uuid::Uuid;
 
 use crate::{MessageQueue, TetraEntityTrait};
@@ -13,7 +14,7 @@ use tetra_core::{Sap, TdmaTime, tetra_entities::TetraEntity};
 use tetra_saps::control::brew::{BrewSubscriberAction, BrewSubscriberUpdate};
 use tetra_saps::{SapMsg, SapMsgInner, control::call_control::CallControl, tmd::TmdCircuitDataReq};
 
-use super::worker::{BrewCommand, BrewConfig, BrewEvent, BrewWorker};
+use super::worker::{BrewCommand, BrewEvent, BrewWorker};
 
 /// Hangtime before releasing group call circuit to allow reuse without re-signaling.
 const GROUP_CALL_HANGTIME: Duration = Duration::from_secs(1);
@@ -227,7 +228,8 @@ impl VoiceJitterBuffer {
 pub struct BrewEntity {
     config: SharedConfig,
 
-    brew_config: BrewConfig,
+    /// Also contained in the SharedConfig, but kept for fast, convenient access
+    brew_config: CfgBrew,
 
     dltime: TdmaTime,
 
@@ -259,13 +261,14 @@ pub struct BrewEntity {
 }
 
 impl BrewEntity {
-    pub fn new(config: SharedConfig, brew_config: BrewConfig) -> Self {
+    pub fn new(config: SharedConfig) -> Self {
         // Create channels
         let (event_sender, event_receiver) = unbounded::<BrewEvent>();
         let (command_sender, command_receiver) = unbounded::<BrewCommand>();
 
         // Spawn worker thread
-        let worker_config = brew_config.clone();
+        let worker_config = config.config().as_ref().brew.clone().unwrap(); // Never fails
+        let entity_config = worker_config.clone();
         let handle = thread::Builder::new()
             .name("brew-worker".to_string())
             .spawn(move || {
@@ -281,7 +284,7 @@ impl BrewEntity {
 
         Self {
             config,
-            brew_config,
+            brew_config: entity_config,
             dltime: TdmaTime::default(),
             event_receiver,
             command_sender,

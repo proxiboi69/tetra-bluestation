@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use tetra_core::ranges::SortedDisjointSsiRanges;
+use tetra_config::stack_config_brew::CfgBrew;
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 use uuid::Uuid;
 
@@ -81,31 +81,6 @@ pub enum BrewCommand {
 
     /// Disconnect gracefully
     Disconnect,
-}
-
-// ─── Configuration ────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct BrewConfig {
-    /// TetraPack server hostname or IP
-    pub host: String,
-    /// TetraPack server port
-    pub port: u16,
-    /// Use TLS (wss:// / https://)
-    pub tls: bool,
-    /// Optional username for HTTP Digest auth
-    pub username: Option<String>,
-    /// Optional password for HTTP Digest auth
-    pub password: Option<String>,
-    /// ISSI to register with the server
-    pub issi: u32,
-    /// Reconnection delay
-    pub reconnect_delay: Duration,
-    /// Extra initial jitter playout delay in frames (added on top of adaptive baseline)
-    pub jitter_initial_latency_frames: u8,
-
-    pub whitelisted_ssi_ranges: Option<SortedDisjointSsiRanges>,
-    pub blacklisted_ssi_ranges: Option<SortedDisjointSsiRanges>,
 }
 
 // ─── TLS helper ──────────────────────────────────────────────────
@@ -254,7 +229,7 @@ fn build_digest_response(
 // ─── Worker ───────────────────────────────────────────────────────
 
 pub struct BrewWorker {
-    config: BrewConfig,
+    config: CfgBrew,
     /// Send events to the BrewEntity
     event_sender: Sender<BrewEvent>,
     /// Receive commands from the BrewEntity
@@ -264,7 +239,7 @@ pub struct BrewWorker {
 }
 
 impl BrewWorker {
-    pub fn new(config: BrewConfig, event_sender: Sender<BrewEvent>, command_receiver: Receiver<BrewCommand>) -> Self {
+    pub fn new(config: CfgBrew, event_sender: Sender<BrewEvent>, command_receiver: Receiver<BrewCommand>) -> Self {
         Self {
             config,
             event_sender,

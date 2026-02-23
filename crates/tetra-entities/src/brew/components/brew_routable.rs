@@ -1,8 +1,7 @@
-use tetra_config::SharedConfig;
+use tetra_config::{SharedConfig, stack_config_brew::CfgBrew};
 
-use crate::brew::worker::BrewConfig;
-
-pub fn is_brew_routable(config: &SharedConfig, brew_config: &BrewConfig, ssi: u32) -> bool {
+/// Determine if a given SSI should be routed over brew, or is restricted to local handling
+pub fn is_brew_routable(config: &SharedConfig, brew_config: &CfgBrew, ssi: u32) -> bool {
     if ssi <= 90 {
         // Brew doesn't route 0..=90
         return false;
