@@ -382,6 +382,8 @@ struct CellInfoDto {
     pub u_plane_dtx: Option<bool>,
     pub frame_18_ext: Option<bool>,
 
+    pub local_ssi_ranges: Option<Vec<(u32, u32)>>,
+
     #[serde(flatten)]
     extra: HashMap<String, Value>,
 }
