@@ -1,7 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
 use serde::Deserialize;
-use tetra_core::ranges::SortedDisjointSsiRanges;
 use toml::Value;
 
 /// Brew protocol (TetraPack/BrandMeister) configuration
@@ -24,8 +23,7 @@ pub struct CfgBrew {
     /// Extra initial jitter playout delay in frames (added on top of adaptive baseline)
     pub jitter_initial_latency_frames: u8,
 
-    pub whitelisted_ssi_ranges: Option<SortedDisjointSsiRanges>,
-    pub blacklisted_ssi_ranges: Option<SortedDisjointSsiRanges>,
+    pub whitelisted_ssis: Option<Vec<u32>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -50,8 +48,7 @@ pub struct CfgBrewDto {
     #[serde(default)]
     pub jitter_initial_latency_frames: u8,
 
-    pub whitelisted_ssi_ranges: Option<Vec<(u32, u32)>>,
-    pub blacklisted_ssi_ranges: Option<Vec<(u32, u32)>>,
+    pub whitelisted_ssis: Option<Vec<u32>>,
 
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
@@ -67,16 +64,6 @@ fn default_brew_reconnect_delay() -> u64 {
 
 /// Convert a CfgBrewDto (from TOML) into a CfgBrew (used in the stack config)
 pub fn apply_brew_patch(src: CfgBrewDto) -> CfgBrew {
-    let whitelist = src
-        .whitelisted_ssi_ranges
-        .map(|ranges| SortedDisjointSsiRanges::from_vec_tuple(ranges));
-    let blacklist = src
-        .blacklisted_ssi_ranges
-        .map(|ranges| SortedDisjointSsiRanges::from_vec_tuple(ranges));
-    assert!(
-        !(whitelist.is_some() && blacklist.is_some()),
-        "Cannot specify both whitelisted_ssi_ranges and blacklisted_ssi_ranges in brew config"
-    );
     CfgBrew {
         host: src.host,
         port: src.port,
@@ -86,7 +73,6 @@ pub fn apply_brew_patch(src: CfgBrewDto) -> CfgBrew {
         issi: src.issi,
         reconnect_delay: Duration::from_secs(src.reconnect_delay_secs),
         jitter_initial_latency_frames: src.jitter_initial_latency_frames,
-        whitelisted_ssi_ranges: whitelist,
-        blacklisted_ssi_ranges: blacklist,
+        whitelisted_ssis: src.whitelisted_ssis,
     }
 }
