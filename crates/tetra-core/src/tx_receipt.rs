@@ -96,7 +96,7 @@ impl TxReceipt {
 /// The reporting half of a transmit receipt, carried alongside the PDU down
 /// through MAC and LLC. These layers call the `mark_*` methods to drive state
 /// transitions that the paired [`TxReceipt`] can observe.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct TxReporter {
     expects_ack: bool,
     state: Arc<AtomicU8>,
@@ -109,6 +109,7 @@ impl TxReporter {
     }
 
     fn mark(&self, curr_state: TxState, new_state: TxState) {
+        // tracing::info!("TxReporter: marking {:?} -> {:?}", curr_state, new_state);
         match self
             .state
             .compare_exchange(curr_state as u8, new_state as u8, Ordering::Relaxed, Ordering::Relaxed)
@@ -127,7 +128,6 @@ impl TxReporter {
 
     /// Pending → Transmitted: MAC layer has sent the PDU over the air.
     pub fn mark_transmitted(&self) {
-        tracing::info!("TxReporter: marking as transmitted");
         self.mark(TxState::Pending, TxState::Transmitted);
     }
 
@@ -154,6 +154,7 @@ impl TxReporter {
         self.mark(TxState::Transmitted, TxState::Lost);
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

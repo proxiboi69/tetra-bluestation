@@ -482,7 +482,6 @@ impl UmacBs {
         // Handle reservation if present
         // let ul_time = message.dltime.add_timeslots(-2);
         if let Some(res_req) = &pdu.reservation_req {
-            tracing::error!("rx_mac_data: time {:?}", message.dltime);
             let grant = self.channel_scheduler.ul_process_cap_req(message.dltime.t, addr, res_req);
             if let Some(grant) = grant {
                 // Schedule grant
@@ -935,7 +934,7 @@ impl UmacBs {
         pdu_len_bits -= num_fill_bits;
         let orig_end = prim.pdu.get_raw_end();
         prim.pdu.set_raw_end(prim.pdu.get_raw_start() + pdu_len_bits);
-        // tracing::error!("rx_mac_end_hu: orig_end {} raw_start {} num_fill_bits {} curr_pos {}", orig_end, prim.pdu.get_raw_start(), num_fill_bits, prim.pdu.get_raw_pos());
+
         // set to trace
         tracing::trace!(
             "rx_mac_end_hu: pdu: {} sdu: {} fb: {}: {}",

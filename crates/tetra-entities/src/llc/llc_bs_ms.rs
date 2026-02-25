@@ -4,7 +4,7 @@ use std::panic;
 use crate::{MessageQueue, TetraEntityTrait};
 use tetra_config::SharedConfig;
 use tetra_core::tetra_entities::TetraEntity;
-use tetra_core::{BitBuffer, Sap, SsiType, TdmaTime, TetraAddress, unimplemented_log};
+use tetra_core::{BitBuffer, Sap, SsiType, TdmaTime, TetraAddress, TxReporter, unimplemented_log};
 use tetra_saps::lcmc::enums::alloc_type::ChanAllocType;
 use tetra_saps::lcmc::enums::ul_dl_assignment::UlDlAssignment;
 use tetra_saps::lcmc::fields::chan_alloc_req::CmceChanAllocReq;
@@ -19,7 +19,20 @@ use tetra_pdus::llc::pdus::bl_adata::BlAdata;
 use tetra_pdus::llc::pdus::bl_data::BlData;
 use tetra_pdus::llc::pdus::bl_udata::BlUdata;
 
-pub struct AckData {
+/// Struct that maintains state expected acknowledgement data for a transmitted message.
+/// Aka, we still expect an ack for this.
+pub struct ExpectedInAck {
+    pub addr: TetraAddress,
+    pub t_start: TdmaTime,
+    pub n: u8,
+    /// Timeslot on which the original message was received
+    pub ts: u8,
+    /// Optional TxReporter, used to acknowledge reception by target MS
+    pub tx_reporter: Option<TxReporter>,
+}
+
+/// Struct that maintains state for an ACK we still need to send back.
+pub struct ScheduledOutAck {
     pub addr: TetraAddress,
     pub t_start: TdmaTime,
     pub n: u8,
@@ -30,8 +43,8 @@ pub struct AckData {
 pub struct Llc {
     dltime: TdmaTime,
     config: SharedConfig,
-    scheduled_out_acks: Vec<AckData>,
-    expected_in_acks: Vec<AckData>,
+    scheduled_out_acks: Vec<ScheduledOutAck>,
+    expected_in_acks: Vec<ExpectedInAck>,
 
     /// Per-link send sequence variable V(S), keyed by SSI/GSSI address.
     /// Each link starts at 0 and alternates 0,1,0,1,...
@@ -52,7 +65,7 @@ impl Llc {
 
     /// Schedule an ACK to be sent at a later time
     pub fn schedule_outgoing_ack(&mut self, dltime: TdmaTime, addr: TetraAddress, ns: u8) {
-        self.scheduled_out_acks.push(AckData {
+        self.scheduled_out_acks.push(ScheduledOutAck {
             t_start: dltime,
             n: ns,
             addr,
@@ -82,22 +95,14 @@ impl Llc {
     }
 
     /// Register that we expect an ACK for this link (acknowledged mode only)
-    fn register_expected_ack(&mut self, t: TdmaTime, addr: TetraAddress, n: u8) {
-        self.expected_in_acks.push(AckData {
+    fn register_expected_ack(&mut self, t: TdmaTime, addr: TetraAddress, n: u8, tx_reporter: Option<TxReporter>) {
+        self.expected_in_acks.push(ExpectedInAck {
             t_start: t,
             n,
             addr,
             ts: t.t,
+            tx_reporter,
         });
-    }
-
-    fn format_ack_list(ack_list: &Vec<AckData>) -> String {
-        let mut ret = String::new();
-        ret.push_str("Expected in acks:\n");
-        for ack in ack_list {
-            ret.push_str(&format!("  t: {}, ssi: {}, n: {}\n", ack.t_start.t, ack.addr.ssi, ack.n));
-        }
-        ret
     }
 
     /// Process incoming ACK. Remove outstanding ACK expectation. We ignore unexpected ones, might be a retransmission
@@ -113,7 +118,12 @@ impl Llc {
                         self.expected_in_acks[i].n
                     );
                 }
-                self.expected_in_acks.remove(i);
+
+                // Remove this expected ACK from the list, and if it has a TxReporter, mark it as acknowledged
+                let ack = self.expected_in_acks.remove(i);
+                if let Some(tx_reporter) = ack.tx_reporter {
+                    tx_reporter.mark_acknowledged();
+                }
                 return;
             }
         }
@@ -213,7 +223,7 @@ impl Llc {
             pdu_buf.seek(0);
             tracing::debug!("-> {:?} sdu {}", pdu, pdu_buf.dump_bin());
             // Register that we expect an ACK back (acknowledged mode only)
-            self.register_expected_ack(message.dltime, prim.main_address, ns);
+            self.register_expected_ack(message.dltime, prim.main_address, ns, prim.tx_reporter.clone());
         } else {
             // BL-DATA (unacknowledged, with or without FCS)
             let pdu = BlData {
@@ -228,10 +238,6 @@ impl Llc {
             tracing::debug!("-> {:?} sdu {}", pdu, pdu_buf.dump_bin());
             // No ACK expected for unacknowledged BL-DATA
         }
-
-        // TODO FIXME:
-        // According to the spec we should issue a TL-REPORT to the upper layer
-        // self.issue_tla_report_ind(queue, TlaReport::ConfirmHandle);
 
         let sapmsg = SapMsg {
             sap: Sap::TmaSap,
@@ -402,7 +408,6 @@ impl Llc {
         // If ns is present, we need to send an ACK
         if let Some(ns) = ns {
             // Send ACK
-            // let ul_time = message.dltime.add_timeslots(-2);
             self.schedule_outgoing_ack(message.dltime, prim.main_address, ns);
         }
 
@@ -476,6 +481,24 @@ impl Llc {
         };
 
         queue.push_back(s);
+    }
+
+    fn format_expected_ack_list(ack_list: &Vec<ExpectedInAck>) -> String {
+        let mut ret = String::new();
+        ret.push_str("Expected in acks:\n");
+        for ack in ack_list {
+            ret.push_str(&format!("  t: {}, ssi: {}, n: {}\n", ack.t_start.t, ack.addr.ssi, ack.n));
+        }
+        ret
+    }
+
+    fn format_scheduled_ack_list(ack_list: &Vec<ScheduledOutAck>) -> String {
+        let mut ret = String::new();
+        ret.push_str("Scheduled out acks:\n");
+        for ack in ack_list {
+            ret.push_str(&format!("  t: {}, ssi: {}, n: {}\n", ack.t_start.t, ack.addr.ssi, ack.n));
+        }
+        ret
     }
 }
 

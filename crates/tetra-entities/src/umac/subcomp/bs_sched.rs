@@ -417,7 +417,13 @@ impl BsChannelScheduler {
     }
 
     pub fn dl_enqueue_tma(&mut self, ts: u8, pdu: MacResource, sdu: BitBuffer, tx_reporter: Option<TxReporter>) {
-        tracing::debug!("dl_enqueue_tma: ts {} enqueueing PDU {:?} SDU {}", ts, pdu, sdu.dump_bin(),);
+        tracing::debug!(
+            "dl_enqueue_tma: ts {} enqueueing {} PDU {:?} SDU {}",
+            if tx_reporter.is_some() { "reported" } else { "" },
+            ts,
+            pdu,
+            sdu.dump_bin(),
+        );
         let elem = DlSchedElem::Resource(pdu, sdu, tx_reporter);
         self.dltx_queues[ts as usize - 1].push(elem);
     }
