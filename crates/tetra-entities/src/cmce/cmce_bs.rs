@@ -82,12 +82,6 @@ impl TetraEntityTrait for CmceBs {
     }
 
     fn tick_start(&mut self, queue: &mut MessageQueue, ts: TdmaTime) {
-        // Testing code
-        // if ts == TdmaTime::default().add_timeslots(10*18*4+2) {
-        //     // Inject a call start
-        //     self.cc.run_call_test(queue, ts);
-        // }
-
         // Propagate tick to subentities
         self.cc.tick_start(queue, ts);
     }
