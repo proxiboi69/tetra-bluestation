@@ -98,7 +98,6 @@ fn main() {
 
     let args = Args::parse();
     let mut cfg = load_config_from_toml(&args.config);
-    eprintln!("Loaded configuration from {:?}", cfg.config());
     let _log_guard = debug::setup_logging_default(cfg.config().debug_log.clone());
 
     let mut router = match cfg.config().stack_mode {
