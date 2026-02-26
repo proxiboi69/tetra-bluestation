@@ -560,12 +560,11 @@ impl CcBsSubentity {
         // Cache for late-entry re-sends. Receipt starts as None so the CircuitMgr-triggered
         // backup send (within D_SETUP_REPEATS frames) is not throttled by this initial send.
         // The first re-send via tick_start will create a tracked receipt.
-        let (_initial_receipt, setup_reporter) = TxReceipt::new(false); // group, no ack
         self.cached_setups.insert(circuit.call_id, (d_setup, dest_addr, None));
         let (d_setup_ref, _, _) = self.cached_setups.get(&circuit.call_id).unwrap();
 
         let (setup_sdu, setup_chan_alloc) = Self::build_d_setup_prim(d_setup_ref, circuit.usage, circuit.ts, UlDlAssignment::Both);
-        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), message.dltime, dest_addr, Some(setup_reporter));
+        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), message.dltime, dest_addr, None);
         queue.push_back(setup_msg);
 
         // Track the active local call — caller is granted the floor, so tx_active = true
@@ -1330,12 +1329,11 @@ impl CcBsSubentity {
         // Cache for late-entry re-sends. Receipt starts as None so the CircuitMgr-triggered
         // backup send (within D_SETUP_REPEATS frames) is not throttled by this initial send.
         // The first re-send via tick_start will create a tracked receipt.
-        let (_initial_receipt, setup_reporter) = TxReceipt::new(false); // group, no ack
         self.cached_setups.insert(call_id, (d_setup, dest_addr, None));
         let (d_setup_ref, _, _) = self.cached_setups.get(&call_id).unwrap();
 
         let (setup_sdu, setup_chan_alloc) = Self::build_d_setup_prim(d_setup_ref, usage, ts, UlDlAssignment::Both);
-        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), self.dltime, dest_addr, Some(setup_reporter));
+        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), self.dltime, dest_addr, None);
         queue.push_back(setup_msg);
 
         // Send D-CONNECT to group
