@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use tetra_config::SharedConfig;
-use tetra_core::TimeslotOwner;
+use tetra_config::bluestation::SharedConfig;
 use tetra_core::{BitBuffer, Direction, Sap, SsiType, TdmaTime, TetraAddress, tetra_entities::TetraEntity, unimplemented_log};
+use tetra_core::{TimeslotOwner, TxReceipt, TxReporter, TxState};
 use tetra_pdus::cmce::enums::disconnect_cause::DisconnectCause;
 use tetra_pdus::cmce::{
     enums::{
@@ -41,8 +41,8 @@ use crate::{
 pub struct CcBsSubentity {
     config: SharedConfig,
     dltime: TdmaTime,
-    /// Cached D-SETUP PDUs for late-entry re-sends: call_id -> (D-SETUP PDU, dest address)
-    cached_setups: HashMap<u16, (DSetup, TetraAddress)>,
+    /// Cached D-SETUP PDUs for late-entry re-sends: call_id -> (D-SETUP PDU, dest address, tx receipt)
+    cached_setups: HashMap<u16, (DSetup, TetraAddress, Option<TxReceipt>)>,
     circuits: CircuitMgr,
     /// Active group calls: call_id -> call info
     active_calls: HashMap<u16, ActiveCall>,
@@ -99,67 +99,6 @@ impl CcBsSubentity {
         self.config = config;
     }
 
-    pub fn run_call_test(&mut self, queue: &mut MessageQueue, dltime: TdmaTime) {
-        tracing::error!("-------- Running call test -------");
-
-        // Create a new circuit
-        let circuit = match {
-            let mut state = self.config.state_write();
-            self.circuits.allocate_circuit_with_allocator(
-                Direction::Dl,
-                CommunicationType::P2Mp,
-                &mut state.timeslot_alloc,
-                TimeslotOwner::Cmce,
-            )
-        } {
-            Ok(circuit) => circuit,
-            Err(e) => {
-                tracing::error!("Failed to allocate circuit for call test: {:?}", e);
-                return;
-            }
-        };
-
-        // Signal UMAC to setup the circuit
-        Self::signal_umac_circuit_open(queue, &circuit, dltime);
-
-        // Build D-SETUP PDU and send down the stack
-        let dest_addr = TetraAddress::new(26, SsiType::Gssi);
-        let pdu_d_setup = Self::build_d_setup_pdu_from_circuit(&circuit);
-        self.cached_setups.insert(circuit.call_id, (pdu_d_setup, dest_addr));
-        let (pdu_ref, _) = self.cached_setups.get(&circuit.call_id).unwrap();
-
-        let (pdu, chan_alloc) = Self::build_d_setup_prim(pdu_ref, circuit.usage, circuit.ts, UlDlAssignment::Dl);
-        let prim = Self::build_sapmsg(pdu, Some(chan_alloc), dltime, dest_addr);
-        queue.push_back(prim);
-    }
-
-    fn build_d_setup_pdu_from_circuit(circuit: &CmceCircuit) -> DSetup {
-        DSetup {
-            call_identifier: circuit.call_id,
-            call_time_out: CallTimeout::Infinite,
-            hook_method_selection: false,
-            simplex_duplex_selection: circuit.simplex_duplex,
-            basic_service_information: BasicServiceInformation {
-                circuit_mode_type: circuit.circuit_mode,
-                encryption_flag: circuit.etee_encrypted,
-                communication_type: circuit.comm_type,
-                slots_per_frame: None,
-                speech_service: Some(0),
-            },
-            transmission_grant: TransmissionGrant::NotGranted,
-            transmission_request_permission: false,
-            call_priority: 0,
-            notification_indicator: None,
-            temporary_address: None,
-            calling_party_address_ssi: Some(2041234),
-            calling_party_extension: None,
-            external_subscriber_number: None,
-            facility: None,
-            dm_ms_address: None,
-            proprietary: None,
-        }
-    }
-
     fn build_d_setup_prim(pdu: &DSetup, usage: u8, ts: u8, ul_dl: UlDlAssignment) -> (BitBuffer, CmceChanAllocReq) {
         tracing::debug!("-> {:?}", pdu);
 
@@ -180,7 +119,13 @@ impl CcBsSubentity {
         (sdu, chan_alloc)
     }
 
-    fn build_sapmsg(sdu: BitBuffer, chan_alloc: Option<CmceChanAllocReq>, dltime: TdmaTime, address: TetraAddress) -> SapMsg {
+    fn build_sapmsg(
+        sdu: BitBuffer,
+        chan_alloc: Option<CmceChanAllocReq>,
+        dltime: TdmaTime,
+        address: TetraAddress,
+        reporter: Option<TxReporter>,
+    ) -> SapMsg {
         // Construct prim
         SapMsg {
             sap: Sap::LcmcSap,
@@ -199,6 +144,7 @@ impl CcBsSubentity {
                 stealing_repeats_flag: false,
                 chan_alloc,
                 main_address: address,
+                tx_reporter: reporter,
             }),
         }
     }
@@ -232,6 +178,7 @@ impl CcBsSubentity {
                 stealing_repeats_flag: false,
                 chan_alloc: Some(chan_alloc),
                 main_address: address,
+                tx_reporter: None,
             }),
         }
     }
@@ -412,76 +359,11 @@ impl CcBsSubentity {
 
                 chan_alloc: None,
                 main_address: prim.received_tetra_address,
-                // redundant_transmission: 1,
+                tx_reporter: None,
             }),
         };
         queue.push_back(msg);
     }
-
-    // fn send_d_setup(&mut self, queue: &mut MessageQueue, message: &SapMsg, pdu_request: &USetup, call_id: u16, calling_party: TetraAddress) {
-    //     tracing::trace!("send_d_setup");
-
-    //     let SapMsgInner::LcmcMleUnitdataInd(prim) = &message.msg else {panic!()};
-
-    //     let transmission_grant = match pdu_request.request_to_transmit_send_data {
-    //         true => TransmissionGrant::Granted,
-    //         false => TransmissionGrant::NotGranted,
-    //     };
-
-    //     let pdu_response = DSetup {
-    //         call_identifier: call_id,
-    //         call_time_out: CallTimeout::T5m,
-    //         hook_method_selection: pdu_request.hook_method_selection,
-    //         simplex_duplex_selection: pdu_request.simplex_duplex_selection,
-    //         basic_service_information: pdu_request.basic_service_information.clone(),
-    //         transmission_grant: transmission_grant,
-    //         transmission_request_permission: false,
-    //         call_priority: 0,
-    //         temporary_address: None,
-    //         calling_party_address_ssi: Some(calling_party.ssi),
-    //         calling_party_extension: None,
-    //         external_subscriber_number: None,
-    //         dm_ms_address: None,
-    //         notification_indicator: None,
-    //         facility: None,
-    //         proprietary: None,
-    //     };
-
-    //     let mut sdu = BitBuffer::new_autoexpand(71);
-    //     pdu_response.to_bitbuf(&mut sdu).expect("Failed to serialize DSetup");
-    //     sdu.seek(0);
-    //     tracing::debug!("send_d_setup: -> {:?} sdu {}", pdu_response, sdu.dump_bin());
-
-    //     let chan_alloc = Some(CmceChanAllocReq {
-    //         usage: self.circuit_alloc_usage(),
-    //         alloc_type: ChanAllocType::Replace,
-    //         carrier: None,
-    //         timeslots: [false, true, false, false],
-    //         ul_dl_assigned: UlDlAssignment::Both,
-    //     });
-
-    //     let msg = SapMsg {
-    //         sap: Sap::LcmcSap,
-    //         src: TetraEntity::Cmce,
-    //         dest: TetraEntity::Mle,
-    //         dltime: message.dltime,
-    //         msg: SapMsgInner::LcmcMleUnitdataReq(LcmcMleUnitdataReq{
-    //             sdu: sdu,
-    //             handle: prim.handle,
-    //             endpoint_id: prim.endpoint_id,
-    //             link_id: prim.link_id,
-    //             layer2service: 0,
-    //             pdu_prio: 0,
-    //             layer2_qos: 0,
-    //             stealing_permission: false,
-    //             stealing_repeats_flag: false,
-    //             chan_alloc,
-    //             main_address: prim.received_tetra_address,
-    //             // redundant_transmission: 4,
-    //         })
-    //     };
-    //     queue.push_back(msg);
-    // }
 
     fn signal_umac_circuit_open(queue: &mut MessageQueue, call: &CmceCircuit, dltime: TdmaTime) {
         let circuit = Circuit {
@@ -649,6 +531,7 @@ impl CcBsSubentity {
                     ul_dl_assigned: UlDlAssignment::Both,
                 }),
                 main_address: calling_party,
+                tx_reporter: None,
             }),
         };
         queue.push_back(connect_msg);
@@ -674,12 +557,14 @@ impl CcBsSubentity {
             proprietary: None,
         };
 
-        // Cache for late-entry re-sends
-        self.cached_setups.insert(circuit.call_id, (d_setup, dest_addr));
-        let (d_setup_ref, _) = self.cached_setups.get(&circuit.call_id).unwrap();
+        // Cache for late-entry re-sends. Receipt starts as None so the CircuitMgr-triggered
+        // backup send (within D_SETUP_REPEATS frames) is not throttled by this initial send.
+        // The first re-send via tick_start will create a tracked receipt.
+        self.cached_setups.insert(circuit.call_id, (d_setup, dest_addr, None));
+        let (d_setup_ref, _, _) = self.cached_setups.get(&circuit.call_id).unwrap();
 
         let (setup_sdu, setup_chan_alloc) = Self::build_d_setup_prim(d_setup_ref, circuit.usage, circuit.ts, UlDlAssignment::Both);
-        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), message.dltime, dest_addr);
+        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), message.dltime, dest_addr, None);
         queue.push_back(setup_msg);
 
         // Track the active local call — caller is granted the floor, so tx_active = true
@@ -764,10 +649,27 @@ impl CcBsSubentity {
                 match task {
                     CircuitMgrCmd::SendDSetup(call_id, usage, ts) => {
                         // Get our cached D-SETUP, build a prim and send it down the stack
-                        let Some((pdu, dest_addr)) = self.cached_setups.get_mut(&call_id) else {
+                        let Some((pdu, dest_addr, receipt)) = self.cached_setups.get_mut(&call_id) else {
                             tracing::error!("No cached D-SETUP for call id {}", call_id);
-                            return;
+                            continue;
                         };
+
+                        // Throttle: if the previous D-SETUP hasn't reached a final state yet
+                        // (still queued in UMAC), skip this re-send to avoid flooding the MCCH.
+                        if let Some(r) = receipt.as_ref() {
+                            if !r.is_in_final_state() {
+                                tracing::trace!(
+                                    "Suppressing D-SETUP re-send for call_id={} (previous still {:?})",
+                                    call_id,
+                                    r.get_state()
+                                );
+                                continue;
+                            }
+                            if r.get_state() == TxState::Discarded {
+                                tracing::debug!("Previous D-SETUP for call_id={} was discarded by UMAC, retrying", call_id);
+                            }
+                        }
+
                         // Update transmission_grant based on current call state:
                         // During hangtime (nobody transmitting), use NotGranted;
                         // during active TX, use GrantedToOtherUser.
@@ -780,7 +682,12 @@ impl CcBsSubentity {
                         }
                         let dest_addr = *dest_addr;
                         let (sdu, chan_alloc) = Self::build_d_setup_prim(pdu, usage, ts, UlDlAssignment::Both);
-                        let prim = Self::build_sapmsg(sdu, Some(chan_alloc), self.dltime, dest_addr);
+
+                        // Create a fresh receipt/reporter for this re-send
+                        let (new_receipt, reporter) = TxReceipt::new(false);
+                        *receipt = Some(new_receipt);
+
+                        let prim = Self::build_sapmsg(sdu, Some(chan_alloc), self.dltime, dest_addr, Some(reporter));
                         queue.push_back(prim);
                     }
 
@@ -788,10 +695,10 @@ impl CcBsSubentity {
                         tracing::warn!("need to send CLOSE for call id {}", call_id);
                         let ts = circuit.ts;
                         // Get our cached D-SETUP, build D-RELEASE and send
-                        if let Some((pdu, dest_addr)) = self.cached_setups.get(&call_id) {
+                        if let Some((pdu, dest_addr, _)) = self.cached_setups.get(&call_id) {
                             let dest_addr = *dest_addr;
                             let sdu = Self::build_d_release_from_d_setup(pdu, DisconnectCause::ExpiryOfTimer);
-                            let prim = Self::build_sapmsg(sdu, None, self.dltime, dest_addr);
+                            let prim = Self::build_sapmsg(sdu, None, self.dltime, dest_addr, None);
                             queue.push_back(prim);
                         } else {
                             tracing::error!("No cached D-SETUP for call id {}", call_id);
@@ -843,7 +750,7 @@ impl CcBsSubentity {
 
     /// Release a call: send D-RELEASE, close circuits, clean up state
     fn release_call(&mut self, queue: &mut MessageQueue, call_id: u16, disconnect_cause: DisconnectCause) {
-        let Some((pdu, dest_addr)) = self.cached_setups.get(&call_id) else {
+        let Some((pdu, dest_addr, _)) = self.cached_setups.get(&call_id) else {
             tracing::error!("No cached D-SETUP for call_id={}", call_id);
             return;
         };
@@ -851,7 +758,7 @@ impl CcBsSubentity {
 
         // Send D-RELEASE to group
         let sdu = Self::build_d_release_from_d_setup(pdu, disconnect_cause);
-        let prim = Self::build_sapmsg(sdu, None, self.dltime, dest_addr);
+        let prim = Self::build_sapmsg(sdu, None, self.dltime, dest_addr, None);
         queue.push_back(prim);
 
         // Close the circuit in CircuitMgr and notify Brew
@@ -980,7 +887,7 @@ impl CcBsSubentity {
         call.hangtime_start = Some(self.dltime);
 
         // Get dest address from cached setup
-        let Some((_, dest_addr)) = self.cached_setups.get(&call_id) else {
+        let Some((_, dest_addr, _)) = self.cached_setups.get(&call_id) else {
             tracing::error!("No cached D-SETUP for call_id={}", call_id);
             return;
         };
@@ -1066,7 +973,7 @@ impl CcBsSubentity {
             *caller_addr = requesting_party;
         }
 
-        let Some((_, dest_addr)) = self.cached_setups.get(&call_id) else {
+        let Some((_, dest_addr, _)) = self.cached_setups.get(&call_id) else {
             tracing::error!("No cached D-SETUP for call_id={}", call_id);
             return;
         };
@@ -1235,6 +1142,7 @@ impl CcBsSubentity {
                     stealing_repeats_flag: false,
                     chan_alloc: None,
                     main_address: sender_addr,
+                    tx_reporter: None,
                 }),
             };
             queue.push_back(msg);
@@ -1418,12 +1326,14 @@ impl CcBsSubentity {
             proprietary: None,
         };
 
-        // Cache for late-entry re-sends
-        self.cached_setups.insert(call_id, (d_setup, dest_addr.clone()));
-        let (d_setup_ref, _) = self.cached_setups.get(&call_id).unwrap();
+        // Cache for late-entry re-sends. Receipt starts as None so the CircuitMgr-triggered
+        // backup send (within D_SETUP_REPEATS frames) is not throttled by this initial send.
+        // The first re-send via tick_start will create a tracked receipt.
+        self.cached_setups.insert(call_id, (d_setup, dest_addr, None));
+        let (d_setup_ref, _, _) = self.cached_setups.get(&call_id).unwrap();
 
         let (setup_sdu, setup_chan_alloc) = Self::build_d_setup_prim(d_setup_ref, usage, ts, UlDlAssignment::Both);
-        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), self.dltime, dest_addr.clone());
+        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), self.dltime, dest_addr, None);
         queue.push_back(setup_msg);
 
         // Send D-CONNECT to group
@@ -1464,6 +1374,7 @@ impl CcBsSubentity {
                 stealing_repeats_flag: false,
                 chan_alloc: None, // Already sent in D-SETUP
                 main_address: dest_addr,
+                tx_reporter: None,
             }),
         };
         queue.push_back(connect_msg);
