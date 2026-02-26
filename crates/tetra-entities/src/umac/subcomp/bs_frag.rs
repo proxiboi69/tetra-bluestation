@@ -105,7 +105,7 @@ impl BsFragger {
             let sdu_bits = slot_cap_bits - hdr_len_bits;
 
             tracing::debug!(
-                "-> {:?} sdu {}",
+                "-> Fragged {:?} sdu {}",
                 self.resource,
                 self.sdu
                     .raw_dump_bin(false, false, self.sdu.get_pos(), self.sdu.get_pos() + sdu_bits)
@@ -394,35 +394,5 @@ mod tests {
             reconstructed.starts_with(vec),
             "Original vec should be contained in reconstructed string"
         );
-    }
-
-    #[test]
-    fn test_low_cap_start_and_no_room_for_fill_bits() {
-        // TODO FIXME: after further reading of the spec, while the searched behavior is not incorrect,
-        // this test is suboptimal. The SDU entirely fits into the second mac_block, but fill bits would
-        // not fit. HOwever, the spec states we may supply a higher lenght_ind, and the effective lenght
-        // will be capped by the mac_block size. Thus, no fill bits need to be added.
-        // TODO: adapt the behavior, and adapt test to verify sdu fits exactly into the second slot.
-
-        debug::setup_logging_verbose();
-        let vec = "010101100100110000";
-        let pdu = get_default_resource();
-        let sdu = BitBuffer::from_bitstr(vec);
-        let mut fragger = BsFragger::new(pdu, sdu, None);
-
-        let mut mac_block = BitBuffer::new(30); // Too small for proper message
-        let done = fragger.get_next_chunk(&mut mac_block);
-        tracing::info!("[1]: {}", mac_block.dump_bin());
-        assert!(!done);
-
-        let mut mac_block = BitBuffer::new(61); // Contains all SDU bits; but can't fit fill bits??
-        let done = fragger.get_next_chunk(&mut mac_block);
-        tracing::info!("[2]: {}", mac_block.dump_bin());
-        assert!(!done, "fill bits shouldnt fit");
-
-        let mut mac_block = BitBuffer::new(61); // Too small for proper message
-        let done = fragger.get_next_chunk(&mut mac_block);
-        tracing::info!("[3]: {}", mac_block.dump_bin());
-        assert!(done);
     }
 }

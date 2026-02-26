@@ -79,7 +79,7 @@ pub struct CfgSoapySdr {
     /// Downlink frequency in Hz
     pub dl_freq: f64,
     /// PPM frequency error correction
-    pub ppm_err: Option<f64>,
+    pub ppm_err: f64,
     /// Hardware-specific I/O configuration
     pub io_cfg: SoapySdrIoCfg,
 }
@@ -87,29 +87,18 @@ pub struct CfgSoapySdr {
 impl CfgSoapySdr {
     /// Get corrected UL frequency with PPM error applied
     pub fn ul_freq_corrected(&self) -> (f64, f64) {
-        let ppm = self.ppm_err.unwrap_or(0.0);
+        let ppm = self.ppm_err;
         let err = (self.ul_freq / 1_000_000.0) * ppm;
         (self.ul_freq + err, err)
     }
 
     /// Get corrected DL frequency with PPM error applied
     pub fn dl_freq_corrected(&self) -> (f64, f64) {
-        let ppm = self.ppm_err.unwrap_or(0.0);
+        let ppm = self.ppm_err;
         let err = (self.dl_freq / 1_000_000.0) * ppm;
         (self.dl_freq + err, err)
     }
 }
-
-// impl Default for CfgSoapySdr {
-//     fn default() -> Self {
-//         Self {
-//             ul_freq: 0.0,
-//             dl_freq: 0.0,
-//             ppm_err: None,
-//             io_cfg: SoapySdrIoCfg::default(),
-//         }
-//     }
-// }
 
 #[derive(Deserialize)]
 pub struct SoapySdrDto {

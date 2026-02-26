@@ -945,7 +945,6 @@ impl UmacBs {
         );
 
         // Get slot owner from schedule, decrypt if needed
-        // let ul_time = message.dltime.add_timeslots(-2);
         let Some(slot_owner) = self.channel_scheduler.ul_get_slot_owner(message.dltime, prim.block_num) else {
             tracing::warn!("rx_mac_end_hu: Received MAC-END-HU for unassigned block {:?}", prim.block_num);
             self.channel_scheduler.dump_ul_schedule_full(true);

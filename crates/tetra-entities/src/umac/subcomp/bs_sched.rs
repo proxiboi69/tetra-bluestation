@@ -1323,7 +1323,7 @@ mod tests {
                 priority_cell: false,
                 no_minimum_mode: true,
                 migration: false,
-                system_wide_services: false,
+                system_wide_services: true,
                 voice_service: true,
                 circuit_mode_data_service: false,
                 sndcp_service: false,
