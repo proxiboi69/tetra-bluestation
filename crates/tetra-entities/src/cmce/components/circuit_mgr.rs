@@ -319,8 +319,10 @@ impl CircuitMgr {
                             .get_or_insert_with(Vec::new)
                             .push(CircuitMgrCmd::SendDSetup(circuit.call_id, circuit.usage, circuit.ts));
                     }
-                    // Late entry: resend every 5 seconds
-                    else if age % LATE_ENTRY_INTERVAL_TIMESLOTS == 0 {
+                    // Late entry: resend every 5 seconds.
+                    // Compare in frames (age/4) since tick_start only fires on t==1
+                    // but ts_created may have any timeslot value.
+                    else if (age / 4) % (LATE_ENTRY_INTERVAL_TIMESLOTS / 4) == 0 {
                         tasks
                             .get_or_insert_with(Vec::new)
                             .push(CircuitMgrCmd::SendDSetup(circuit.call_id, circuit.usage, circuit.ts));
