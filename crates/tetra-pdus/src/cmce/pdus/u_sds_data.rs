@@ -37,14 +37,13 @@ pub struct USdsData {
     /// Conditional 11 bits, See note 2, condition: short_data_type_identifier == 3
     pub length_indicator: Option<u64>,
     /// Conditional See note 2, condition: short_data_type_identifier == 3
-    pub user_defined_data_4: Option<u64>,
+    pub user_defined_data_4: Option<Vec<u8>>,
     /// Type3, External subscriber number
     pub external_subscriber_number: Option<Type3FieldGeneric>,
     /// Type3, DM-MS address
     pub dm_ms_address: Option<Type3FieldGeneric>,
 }
 
-#[allow(unreachable_code)] // TODO FIXME review, finalize and remove this
 impl USdsData {
     /// Parse from BitBuffer
     pub fn from_bitbuf(buffer: &mut BitBuffer) -> Result<Self, PduParseErr> {
@@ -101,8 +100,17 @@ impl USdsData {
         };
         // Conditional
         let user_defined_data_4 = if short_data_type_identifier == 3 {
-            unimplemented!();
-            Some(buffer.read_field(999, "user_defined_data_4")?)
+            let len_bits = length_indicator.unwrap() as usize;
+            let full_bytes = len_bits / 8;
+            let remaining_bits = len_bits % 8;
+            let mut data = Vec::with_capacity(full_bytes + if remaining_bits > 0 { 1 } else { 0 });
+            for _ in 0..full_bytes {
+                data.push(buffer.read_field(8, "user_defined_data_4")? as u8);
+            }
+            if remaining_bits > 0 {
+                data.push((buffer.read_field(remaining_bits, "user_defined_data_4")? as u8) << (8 - remaining_bits));
+            }
+            Some(data)
         } else {
             None
         };
@@ -178,9 +186,16 @@ impl USdsData {
             buffer.write_bits(*value, 11);
         }
         // Conditional
-        if let Some(ref _value) = self.user_defined_data_4 {
-            unimplemented!();
-            buffer.write_bits(*_value, 999);
+        if let Some(ref data) = self.user_defined_data_4 {
+            let len_bits = self.length_indicator.unwrap() as usize;
+            let full_bytes = len_bits / 8;
+            let remaining_bits = len_bits % 8;
+            for i in 0..full_bytes {
+                buffer.write_bits(data[i] as u64, 8);
+            }
+            if remaining_bits > 0 {
+                buffer.write_bits((data[full_bytes] >> (8 - remaining_bits)) as u64, remaining_bits);
+            }
         }
 
         // Check if any optional field present and place o-bit
@@ -199,6 +214,120 @@ impl USdsData {
         // Write terminating m-bit
         delimiters::write_mbit(buffer, 0);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tetra_core::BitBuffer;
+
+    fn round_trip(pdu: &USdsData) -> USdsData {
+        let mut buf = BitBuffer::new_autoexpand(256);
+        pdu.to_bitbuf(&mut buf).expect("serialize failed");
+        buf.seek(0);
+        USdsData::from_bitbuf(&mut buf).expect("parse failed")
+    }
+
+    #[test]
+    fn test_u_sds_data_sdti0_cpti1() {
+        let pdu = USdsData {
+            area_selection: 0,
+            called_party_type_identifier: 1,
+            called_party_short_number_address: None,
+            called_party_ssi: Some(1000001),
+            called_party_extension: None,
+            short_data_type_identifier: 0,
+            user_defined_data_1: Some(0xCAFE),
+            user_defined_data_2: None,
+            user_defined_data_3: None,
+            length_indicator: None,
+            user_defined_data_4: None,
+            external_subscriber_number: None,
+            dm_ms_address: None,
+        };
+        let parsed = round_trip(&pdu);
+        assert_eq!(parsed.area_selection, 0);
+        assert_eq!(parsed.called_party_type_identifier, 1);
+        assert_eq!(parsed.called_party_ssi, Some(1000001));
+        assert_eq!(parsed.called_party_extension, None);
+        assert_eq!(parsed.short_data_type_identifier, 0);
+        assert_eq!(parsed.user_defined_data_1, Some(0xCAFE));
+    }
+
+    #[test]
+    fn test_u_sds_data_sdti3_cpti1() {
+        let payload = vec![0x01, 0x02, 0x03];
+        let pdu = USdsData {
+            area_selection: 5,
+            called_party_type_identifier: 1,
+            called_party_short_number_address: None,
+            called_party_ssi: Some(2000002),
+            called_party_extension: None,
+            short_data_type_identifier: 3,
+            user_defined_data_1: None,
+            user_defined_data_2: None,
+            user_defined_data_3: None,
+            length_indicator: Some(24), // 3 bytes
+            user_defined_data_4: Some(payload.clone()),
+            external_subscriber_number: None,
+            dm_ms_address: None,
+        };
+        let parsed = round_trip(&pdu);
+        assert_eq!(parsed.area_selection, 5);
+        assert_eq!(parsed.called_party_ssi, Some(2000002));
+        assert_eq!(parsed.short_data_type_identifier, 3);
+        assert_eq!(parsed.length_indicator, Some(24));
+        assert_eq!(parsed.user_defined_data_4, Some(payload));
+    }
+
+    #[test]
+    fn test_u_sds_data_cpti0_sna() {
+        let pdu = USdsData {
+            area_selection: 0,
+            called_party_type_identifier: 0,
+            called_party_short_number_address: Some(42),
+            called_party_ssi: None,
+            called_party_extension: None,
+            short_data_type_identifier: 1,
+            user_defined_data_1: None,
+            user_defined_data_2: Some(0x12345678),
+            user_defined_data_3: None,
+            length_indicator: None,
+            user_defined_data_4: None,
+            external_subscriber_number: None,
+            dm_ms_address: None,
+        };
+        let parsed = round_trip(&pdu);
+        assert_eq!(parsed.called_party_type_identifier, 0);
+        assert_eq!(parsed.called_party_short_number_address, Some(42));
+        assert_eq!(parsed.called_party_ssi, None);
+        assert_eq!(parsed.user_defined_data_2, Some(0x12345678));
+    }
+
+    #[test]
+    fn test_u_sds_data_cpti2_extension() {
+        let pdu = USdsData {
+            area_selection: 0,
+            called_party_type_identifier: 2,
+            called_party_short_number_address: None,
+            called_party_ssi: Some(3000003),
+            called_party_extension: Some(0xABCDEF),
+            short_data_type_identifier: 2,
+            user_defined_data_1: None,
+            user_defined_data_2: None,
+            user_defined_data_3: Some(0x0102030405060708),
+            length_indicator: None,
+            user_defined_data_4: None,
+            external_subscriber_number: None,
+            dm_ms_address: None,
+        };
+        let parsed = round_trip(&pdu);
+        assert_eq!(parsed.called_party_type_identifier, 2);
+        assert_eq!(parsed.called_party_ssi, Some(3000003));
+        assert_eq!(parsed.called_party_extension, Some(0xABCDEF));
+        assert_eq!(parsed.short_data_type_identifier, 2);
+        assert_eq!(parsed.user_defined_data_3, Some(0x0102030405060708));
     }
 }
 
