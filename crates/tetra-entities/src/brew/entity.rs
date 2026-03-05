@@ -329,6 +329,18 @@ impl BrewEntity {
                 BrewEvent::VoiceFrame { uuid, length_bits, data } => {
                     self.handle_voice_frame(uuid, length_bits, data);
                 }
+                BrewEvent::SdsTransfer {
+                    uuid,
+                    source,
+                    destination,
+                    data,
+                    length_bits,
+                } => {
+                    self.handle_sds_transfer(queue, uuid, source, destination, data, length_bits);
+                }
+                BrewEvent::SdsReport { uuid, status } => {
+                    tracing::debug!("BrewEntity: SDS report uuid={} status={}", uuid, status);
+                }
                 BrewEvent::SubscriberEvent { msg_type, issi, groups } => {
                     tracing::debug!("BrewEntity: subscriber event type={} issi={} groups={:?}", msg_type, issi, groups);
                 }
@@ -838,6 +850,9 @@ impl TetraEntityTrait for BrewEntity {
             SapMsgInner::MmSubscriberUpdate(update) => {
                 self.handle_subscriber_update(update);
             }
+            SapMsgInner::CmceSdsData(sds) => {
+                self.handle_sds_send(sds);
+            }
             _ => {
                 tracing::debug!("BrewEntity: unexpected rx_prim from {:?} on {:?}", message.src, message.sap);
             }
@@ -1028,6 +1043,77 @@ impl BrewEntity {
             uuid: fwd.uuid,
             length_bits: (ste_data.len() * 8) as u16,
             data: ste_data,
+        });
+    }
+}
+
+// ─── SDS handling ─────────────────────────────────────────────────
+
+impl BrewEntity {
+    /// Handle incoming SDS transfer from Brew (network → local MS)
+    fn handle_sds_transfer(
+        &mut self,
+        queue: &mut MessageQueue,
+        uuid: Uuid,
+        source: u32,
+        destination: u32,
+        data: Vec<u8>,
+        length_bits: u16,
+    ) {
+        tracing::info!(
+            "BrewEntity: SDS transfer uuid={} src={} dst={} {} bytes",
+            uuid,
+            source,
+            destination,
+            data.len()
+        );
+
+        // Brew always sends SDS Type 4 (variable length) per protocol spec
+        let short_data_type_identifier = 3;
+
+        // Forward to CMCE SDS subentity for downlink delivery
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Brew,
+            dest: TetraEntity::Cmce,
+            dltime: self.dltime,
+            msg: SapMsgInner::CmceSdsData(tetra_saps::control::sds::CmceSdsData {
+                source_issi: source,
+                dest_issi: destination,
+                short_data_type_identifier,
+                data,
+                length_bits,
+            }),
+        });
+    }
+
+    /// Handle outgoing SDS from CMCE → Brew (local MS → network)
+    fn handle_sds_send(&self, sds: tetra_saps::control::sds::CmceSdsData) {
+        if !self.connected {
+            tracing::warn!(
+                "BrewEntity: not connected, dropping outgoing SDS {} -> {}",
+                sds.source_issi,
+                sds.dest_issi
+            );
+            return;
+        }
+
+        let uuid = Uuid::new_v4();
+        tracing::info!(
+            "BrewEntity: sending SDS uuid={} src={} dst={} type={} {} bytes",
+            uuid,
+            sds.source_issi,
+            sds.dest_issi,
+            sds.short_data_type_identifier,
+            sds.data.len()
+        );
+
+        let _ = self.command_sender.send(BrewCommand::SendSds {
+            uuid,
+            source: sds.source_issi,
+            destination: sds.dest_issi,
+            data: sds.data,
+            length_bits: sds.length_bits,
         });
     }
 }

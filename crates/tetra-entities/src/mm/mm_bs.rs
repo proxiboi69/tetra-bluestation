@@ -106,6 +106,7 @@ impl MmBs {
         let ssi = prim.received_address.ssi;
         let detached_client = self.client_mgr.remove_client(ssi);
         if let Some(client) = detached_client {
+            self.config.state_write().subscribers.deregister(ssi);
             if !client.groups.is_empty() {
                 let groups: Vec<u32> = client.groups.iter().copied().collect();
                 self.emit_subscriber_update(_queue, message.dltime, ssi, groups, BrewSubscriberAction::Deaffiliate);
@@ -164,6 +165,7 @@ impl MmBs {
         if is_new {
             match self.client_mgr.try_register_client(issi, true) {
                 Ok(_) => {
+                    self.config.state_write().subscribers.register(issi);
                     self.emit_subscriber_update(queue, message.dltime, issi, Vec::new(), BrewSubscriberAction::Register);
                 }
                 Err(e) => {
@@ -343,6 +345,7 @@ impl MmBs {
                 // Re-register so group attachment can proceed.
                 match self.client_mgr.try_register_client(issi, true) {
                     Ok(_) => {
+                        self.config.state_write().subscribers.register(issi);
                         self.emit_subscriber_update(queue, message.dltime, issi, Vec::new(), BrewSubscriberAction::Register);
                     }
                     Err(e) => {
@@ -360,6 +363,12 @@ impl MmBs {
                 match self.client_mgr.client_detach_all_groups(issi) {
                     Ok(_) => {
                         if !prior_groups.is_empty() {
+                            {
+                                let mut state = self.config.state_write();
+                                for &gssi in &prior_groups {
+                                    state.subscribers.deaffiliate(issi, gssi);
+                                }
+                            }
                             self.emit_subscriber_update(queue, message.dltime, issi, prior_groups, BrewSubscriberAction::Deaffiliate);
                         }
                     }
@@ -471,6 +480,7 @@ impl MmBs {
                 match self.client_mgr.client_group_attach(issi, gssi, false) {
                     Ok(changed) => {
                         if changed {
+                            self.config.state_write().subscribers.deaffiliate(issi, gssi);
                             deaff_groups.push(gssi);
                         }
                         let gid = GroupIdentityDownlink {
@@ -490,6 +500,7 @@ impl MmBs {
                 match self.client_mgr.client_group_attach(issi, gssi, true) {
                     Ok(changed) => {
                         if changed {
+                            self.config.state_write().subscribers.affiliate(issi, gssi);
                             aff_groups.push(gssi);
                         }
                         // We have added the client to this group. Add an entry to the downlink response
