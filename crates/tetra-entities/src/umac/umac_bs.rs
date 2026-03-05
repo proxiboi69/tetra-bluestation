@@ -1121,12 +1121,16 @@ impl UmacBs {
                 const STCH_CAP: usize = 124;
 
                 let usage_marker = prim.chan_alloc.as_ref().and_then(|ca| ca.usage);
+                // Per ETSI 21.4.3.1: "The random access flag shall be used for the BS to
+                // acknowledge a successful random access." SSI-addressed FACCH stealings
+                // (e.g. D-TX GRANTED) are responses to a MAC-ACCESS; GSSI-addressed ones
+                // (e.g. group D-TX GRANTED) are not.
+                let is_random_access_response = prim.main_address.ssi_type != SsiType::Gssi;
                 let mut mac_pdu = MacResource {
                     fill_bits: false,
                     pos_of_grant: 0,
                     encryption_mode: 0,
-                    // FACCH/STCH on traffic channels is not a random-access response.
-                    random_access_flag: false,
+                    random_access_flag: is_random_access_response,
                     length_ind: 0,
                     addr: Some(prim.main_address),
                     event_label: None,
