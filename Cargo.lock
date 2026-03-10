@@ -1601,6 +1601,7 @@ dependencies = [
 name = "tetra-config"
 version = "0.5.0"
 dependencies = [
+ "chrono-tz",
  "serde",
  "tetra-core",
  "toml",

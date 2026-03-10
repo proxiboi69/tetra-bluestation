@@ -27,6 +27,12 @@ pub struct Mle {
     last_time_broadcast_h: Option<u16>,
 }
 
+/// Multiframe at which D-NWRK-BROADCAST is sent within each hyperframe.
+/// Offset from multiframe 1 to avoid congestion with other hyperframe-triggered events.
+const MLE_BROADCAST_MULTIFRAME: u8 = 3;
+/// Frame at which D-NWRK-BROADCAST is sent within the broadcast multiframe.
+const MLE_BROADCAST_FRAME: u8 = 1;
+
 impl Mle {
     pub fn new(config: SharedConfig) -> Self {
         Self {
@@ -424,10 +430,8 @@ impl Mle {
     }
 
     fn send_d_nwrk_broadcast(&self, queue: &mut MessageQueue, ts: TdmaTime, tz: &str) {
-        let Some(time_value) = encode_tetra_network_time(tz) else {
-            tracing::warn!("Invalid timezone '{}', skipping D-NWRK-BROADCAST", tz);
-            return;
-        };
+        // Timezone is validated at config parse time, so encode cannot fail here
+        let time_value = encode_tetra_network_time(tz).expect("timezone was validated at config parse time");
 
         let pdu = DNwrkBroadcast {
             cell_re_select_parameters: 0,
@@ -613,12 +617,15 @@ impl TetraEntityTrait for Mle {
     }
 
     fn tick_start(&mut self, queue: &mut MessageQueue, ts: TdmaTime) {
-        // Broadcast D-NWRK-BROADCAST once per hyperframe if timezone is configured
-        let tz = self.config.config().cell.timezone.clone();
-        if let Some(ref tz) = tz {
-            if self.last_time_broadcast_h != Some(ts.h) {
-                self.send_d_nwrk_broadcast(queue, ts, tz);
-                self.last_time_broadcast_h = Some(ts.h);
+        // Broadcast D-NWRK-BROADCAST once per hyperframe if timezone is configured.
+        // Use a constant multiframe/frame offset to avoid congestion with other
+        // hyperframe-triggered events.
+        if ts.m == MLE_BROADCAST_MULTIFRAME && ts.f == MLE_BROADCAST_FRAME && ts.t == 1 {
+            if let Some(ref tz) = self.config.config().cell.timezone {
+                if self.last_time_broadcast_h != Some(ts.h) {
+                    self.send_d_nwrk_broadcast(queue, ts, tz);
+                    self.last_time_broadcast_h = Some(ts.h);
+                }
             }
         }
     }
