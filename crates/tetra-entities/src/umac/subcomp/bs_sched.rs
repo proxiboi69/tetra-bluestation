@@ -235,7 +235,10 @@ impl BsChannelScheduler {
     /// Returns (opportunities_to_skip, Vec<timestamps_of_granted_slots>)
     /// Returns None if no suitable opportunity is found in the schedule
     pub fn ul_find_grant_opportunity(&self, t: u8, num_slots: usize, is_halfslot: bool) -> Option<(usize, Vec<TdmaTime>)> {
-        let first_opportunity = self.cur_dltime.forward_to_timeslot(t);
+        // Start search 1 frame ahead: the grant PDU goes out ~1 frame after
+        // the access, and we use at least delay=1, so the MS transmits 1 frame
+        // after receiving the grant = 2 frames after the access.
+        let first_opportunity = self.cur_dltime.forward_to_timeslot(t).add_timeslots(4);
         let mut grant_timeslots = Vec::with_capacity(num_slots);
         let mut opportunities_skipped = 0;
 
@@ -354,11 +357,11 @@ impl BsChannelScheduler {
             } else {
                 BasicSlotgrantCapAlloc::from_req_slotcount(requested_cap)
             };
-            let grant_delay = if skips == 0 {
-                BasicSlotgrantGrantingDelay::CapAllocAtNextOpportunity
-            } else {
-                BasicSlotgrantGrantingDelay::DelayNOpportunities(skips as u8)
-            };
+            // Use at least 1 opportunity delay so the MS has a full frame to
+            // process the grant before transmitting. CapAllocAtNextOpportunity
+            // (delay=0) means "same frame as the grant PDU" which is too tight
+            // for some radios.
+            let grant_delay = BasicSlotgrantGrantingDelay::DelayNOpportunities((skips + 1) as u8);
             Some(BasicSlotgrant {
                 capacity_allocation: cap_alloc,
                 granting_delay: grant_delay,
@@ -1162,23 +1165,22 @@ impl BsChannelScheduler {
     fn generate_default_blks(&self, ts: TdmaTime) -> TmvUnitdataReq {
         match (ts.f, ts.t) {
             (1..=17, 1) => {
-                // Two options: [Blk1: Null | Blk2: SYSINFO] or [Both: Null]
-                // We'll alternate based on multiframe
+                // Two options: [Blk1: SCH/HD Null | Blk2: BNCH SYSINFO] or [Blk1: SCH/F Null]
+                // Alternate based on multiframe per ETSI clause 9.5.3
                 match ts.m % 2 {
                     0 => {
-                        // Null + SYSINFO
-                        // SYSINFO gets added later, su we just make a half-slot Null pdu here
-                        let mut buf1 = BitBuffer::new(SCH_F_CAP);
-                        let blk1 = MacResource::null_pdu();
-                        blk1.to_bitbuf(&mut buf1);
+                        // Half-slot Null PDU + SYSINFO (added later as BNCH blk2)
+                        let mut buf = BitBuffer::new(SCH_HD_CAP);
+                        let blk = MacResource::null_pdu();
+                        blk.to_bitbuf(&mut buf);
                         TmvUnitdataReq {
-                            logical_channel: LogicalChannel::SchF,
-                            mac_block: buf1,
+                            logical_channel: LogicalChannel::SchHd,
+                            mac_block: buf,
                             scrambling_code: self.scrambling_code,
                         }
                     }
                     1 => {
-                        // Full-slot Null pdu
+                        // Full-slot Null PDU
                         let mut buf = BitBuffer::new(SCH_F_CAP);
                         let blk = MacResource::null_pdu();
                         blk.to_bitbuf(&mut buf);
@@ -1486,7 +1488,7 @@ mod tests {
         tracing::info!("usage ts 1/2/3: {:?}/{:?}/{:?}", u1, u2, u3);
 
         assert_eq!(grant2.capacity_allocation, BasicSlotgrantCapAlloc::Grant3Slots);
-        assert_eq!(grant2.granting_delay, BasicSlotgrantGrantingDelay::DelayNOpportunities(1));
+        assert_eq!(grant2.granting_delay, BasicSlotgrantGrantingDelay::DelayNOpportunities(2));
     }
 
     #[test]

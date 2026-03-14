@@ -43,7 +43,7 @@ fn test_in_fragmented_sch_hu_and_sch_f() {
         sap: Sap::TmvSap,
         src: TetraEntity::Lmac,
         dest: TetraEntity::Umac,
-        dltime: ultime_vec1.add_timeslots(4), // Uplink time: 0/1/2/1
+        dltime: ultime_vec1.add_timeslots(8), // Uplink time: 0/1/3/1 (grant delay=1, 1 frame after DL ack)
         msg: SapMsgInner::TmvUnitdataInd(test_prim2),
     };
 
@@ -58,7 +58,7 @@ fn test_in_fragmented_sch_hu_and_sch_f() {
 
     // Submit and process message
     test.submit_message(test_sapmsg1);
-    test.run_stack(Some(4));
+    test.run_stack(Some(8));
     test.submit_message(test_sapmsg2);
     test.run_stack(Some(1));
     let sink_msgs = test.dump_sinks();
@@ -103,7 +103,7 @@ fn test_in_fragmented_sch_hu_and_sch_hu() {
         sap: Sap::TmvSap,
         src: TetraEntity::Lmac,
         dest: TetraEntity::Umac,
-        dltime: ultime_vec1.add_timeslots(4), // Uplink time: 0/1/2/1
+        dltime: ultime_vec1.add_timeslots(8), // Uplink time: 0/1/3/1 (grant delay=1, 1 frame after DL ack)
         msg: SapMsgInner::TmvUnitdataInd(test_prim2),
     };
 
@@ -118,7 +118,7 @@ fn test_in_fragmented_sch_hu_and_sch_hu() {
 
     // Submit and process message
     test.submit_message(test_sapmsg1);
-    test.run_stack(Some(4));
+    test.run_stack(Some(8));
     test.submit_message(test_sapmsg2);
     test.run_stack(Some(1));
 
