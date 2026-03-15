@@ -54,9 +54,20 @@ pub fn get_device_arguments(io_cfg: &SoapySdrIoCfg, mode: Mode) -> Vec<(String, 
     // Additional device arguments for devices that need them
     match driver {
         "plutosdr" => {
-            args.push(("direct".to_string(), "1".to_string()));
-            args.push(("timestamp_every".to_string(), "1500".to_string()));
-            //cfg = &io_cfg.iocfg_pluto
+            let cfg: &Option<CfgPluto> = &io_cfg.iocfg_pluto;
+            // If cfg is None, use default which sets all optional fields to None.
+            let cfg_pluto = if let Some(cfg) = cfg { &cfg } else { &CfgPluto::default() };
+
+            //args.push(("direct".to_string(), "1".to_string()));
+            args.push(("direct".to_string(), cfg_pluto.direct.map_or("1", |v| if v {"1"} else {"0"}).to_string()));
+            //args.push(("timestamp_every".to_string(), "1500".to_string()));
+            args.push(("timestamp_every".to_string(), cfg_pluto.timestamp_every.unwrap_or(1500).to_string()));
+            if let Some(ref uri) = cfg_pluto.uri {
+                args.push(("uri".to_string(), uri.to_string()));
+            }
+            if let Some(loopback) = cfg_pluto.loopback {
+                args.push(("loopback".to_string(), (if loopback {"1"} else {"0"}).to_string()));
+            }
         },
         _ => { },
     }
