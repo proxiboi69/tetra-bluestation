@@ -119,11 +119,14 @@ impl Llc {
         ns
     }
 
-    /// Returns and removes the expected ACK entry for the given SSI, if any
-    fn take_expected_ack_for_ssi(&mut self, ssi: u32) -> Option<ExpectedInAck> {
+    /// Returns and removes the expected ACK entry matching both SSI and N(R).
+    /// Per ETSI 22.3.2.3, N(R) in BL-ACK/BL-ADATA explicitly identifies which TL-SDU
+    /// is being acknowledged, ensuring correct pairing even when ACKs arrive out of order
+    /// or for retransmitted packets.
+    fn take_expected_ack_for_ssi_and_nr(&mut self, ssi: u32, nr: u8) -> Option<ExpectedInAck> {
         for i in 0..self.outbound_messages.len() {
             let msg = &self.outbound_messages[i];
-            if msg.addr.ssi == ssi && msg.t_submitted_to_umac.is_some() {
+            if msg.addr.ssi == ssi && msg.t_submitted_to_umac.is_some() && msg.ns == nr {
                 return self.outbound_messages.remove(i);
             }
         }
@@ -133,18 +136,23 @@ impl Llc {
     /// Process incoming ACK per ETSI 22.3.2.3(k).
     /// Matches by SSI and N(R) so that retransmitted BL-DATA entries are matched correctly.
     fn process_incoming_ack(&mut self, addr: TetraAddress, nr: u8) {
-        // Get the expected ACK entry
-        let Some(expected_ack) = self.take_expected_ack_for_ssi(addr.ssi) else {
-            tracing::warn!("received unexpected ACK for SSI {} N(R) {}", addr.ssi, nr);
+        // Get the expected ACK entry, matching on both SSI and N(R) per ETSI 22.3.2.3
+        let Some(expected_ack) = self.take_expected_ack_for_ssi_and_nr(addr.ssi, nr) else {
+            tracing::warn!(
+                "received unexpected ACK for SSI {} N(R) {} (no matching in-flight packet)",
+                addr.ssi,
+                nr
+            );
             return;
         };
 
         // Check it was indeed already transmitted by the Umac
         if expected_ack.t_umac_done.is_none() {
-            // This may be an old retransmission of an ack for the before-last basic link message
-            // Let's push the ack back into the head of the queue (not tail)..
+            // This may be an acknowledgement for a retransmission that arrived before the
+            // Umac reported the original transmission as done. Push back to head and
+            // let the retransmission logic sort it out.
             tracing::warn!(
-                "received ACK for SSI {} N(R) {} that was not yet transmitted by Umac. Ignoring",
+                "received ACK for SSI {} N(R) {} that was not yet transmitted by Umac. Deferring",
                 addr.ssi,
                 nr
             );
@@ -152,26 +160,8 @@ impl Llc {
             return;
         }
 
-        // Check N(R)
-        if expected_ack.ns == nr {
-            // Successful ACK: N(R) matches N(S)
-            tracing::debug!("received ACK for SSI {} N(R) {}", addr.ssi, expected_ack.ns);
-            expected_ack.tx_reporter.mark_acknowledged();
-            return;
-        } else {
-            // N(R) mismatch — per ETSI 22.3.2.3(k), not a successful ACK. Maybe a retransmission?
-            // Let's push it back into the queue head (not the tail) and see if an ack arrives later
-            tracing::warn!(
-                "received unexpected ACK for SSI {}: N(R)={}, expected N(S)={}. Ignoring",
-                addr.ssi,
-                nr,
-                expected_ack.ns
-            );
-            self.outbound_messages.push_front(expected_ack);
-            return;
-        }
-
-        // The expected_ack is confirmed as matched and goes out of scope here
+        tracing::debug!("received ACK for SSI {} N(R) {}", addr.ssi, expected_ack.ns);
+        expected_ack.tx_reporter.mark_acknowledged();
     }
 
     fn rx_tma_prim(&mut self, queue: &mut MessageQueue, message: SapMsg) {
@@ -597,7 +587,7 @@ impl Llc {
     fn submit_retransmissions_to_umac(&mut self, queue: &mut MessageQueue) -> bool {
         let mut had_activity = false;
         let dltime = self.dltime;
-        let mut removals: Option<Vec<u32>> = None;
+        let mut removals: Option<Vec<(u32, u8)>> = None;
 
         // if !self.outbound_messages.is_empty() {
         //     tracing::error!("{}", Self::format_expected_ack_list(&self.outbound_messages));
@@ -634,24 +624,29 @@ impl Llc {
                     Self::submit_for_acknowledged_transmission(queue, ack, self.dltime.forward_to_timeslot(ack.t_first.t));
                     had_activity = true;
                 } else {
-                    // Exhausted retransmissions, flag for discard
-                    removals.get_or_insert(Vec::new()).push(ack.addr.ssi);
+                    // Exhausted retransmissions, remove only this specific entry.
+                    // We use the SSI+NS key to remove it since we don't have the index directly.
+                    let ssi = ack.addr.ssi;
+                    let ns = ack.ns;
+                    removals.get_or_insert(Vec::new()).push((ssi, ns));
                 }
             }
         }
 
         // Remove any expired entries
         if let Some(removals) = removals {
-            for ssi in removals {
-                let ack = self.take_expected_ack_for_ssi(ssi).unwrap(); // Never fails
-                tracing::warn!(
-                    "schedule_retransmissions: SSI {} N(S) {} exhausted retransmissions",
-                    ack.addr.ssi,
-                    ack.ns
-                );
-                ack.tx_reporter.mark_lost();
+            for (ssi, ns) in removals {
+                let idx = self.outbound_messages.iter().position(|m| m.addr.ssi == ssi && m.ns == ns);
+                if let Some(idx) = idx {
+                    let ack = self.outbound_messages.remove(idx).unwrap();
+                    tracing::warn!(
+                        "schedule_retransmissions: SSI {} N(S) {} exhausted retransmissions",
+                        ack.addr.ssi,
+                        ack.ns
+                    );
+                    ack.tx_reporter.mark_lost();
+                }
             }
-            // The ack expires here
         }
 
         had_activity
@@ -659,27 +654,38 @@ impl Llc {
 
     fn submit_free_messages_to_umac(&mut self, queue: &mut MessageQueue) -> bool {
         let mut had_activity = false;
+
+        // Per ETSI 22.2.1.1 basic link window size is 1. A single TL-SDU is sent and
+        // acknowledged at a time. The MS (receiver) only accepts one unacknowledged DL
+        // packet at a time. We enforce this by blocking new submissions while a message
+        // for the same SSI is already submitted and awaiting ACK.
+        // Per ETSI 22.3.2.3, V(S) alternates 0/1 and N(R) explicitly identifies which
+        // TL-SDU is acknowledged, ensuring correct pairing when ACK arrives.
         let mut ssi_blocked: HashSet<u32> = HashSet::new();
         for ack in self.outbound_messages.iter_mut() {
-            // Check if already submitted to umac
+            // Mark SSI as blocked if it has a message already submitted to Umac
             if ack.t_submitted_to_umac.is_some() {
-                // This ssi currently waits for an ack, and is thus blocked
                 ssi_blocked.insert(ack.addr.ssi);
+            }
+        }
+
+        for ack in self.outbound_messages.iter_mut() {
+            // Skip messages already submitted to Umac
+            if ack.t_submitted_to_umac.is_some() {
                 continue;
             }
 
-            // Not submitted; check if blocked
+            // Block new submissions if this SSI already has an in-flight message
             if ssi_blocked.contains(&ack.addr.ssi) {
-                // SSI already has another message waiting for ack, so we cannot submit this one yet
-                tracing::debug!(
-                    "SSI {} N(S) {} still blocked by previous message, cannot submit next message",
+                tracing::trace!(
+                    "SSI {} N(S) {} blocked by in-flight message, cannot submit yet",
                     ack.addr.ssi,
                     ack.ns
                 );
                 continue;
             }
 
-            // Not submitted and not blocked. We can submit it now.
+            // Not submitted and not blocked. Submit it now.
             tracing::debug!("submitting message for SSI {} N(S) {} to umac", ack.addr.ssi, ack.ns);
             Self::submit_for_acknowledged_transmission(queue, ack, self.dltime.forward_to_timeslot(ack.t_first.t));
             ssi_blocked.insert(ack.addr.ssi);
