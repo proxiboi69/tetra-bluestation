@@ -1,7 +1,9 @@
 use tetra_config::bluestation::SharedConfig;
+use tetra_core::typed_pdu_fields::Type3FieldGeneric;
 use tetra_core::{BitBuffer, Sap, SsiType, TetraAddress, tetra_entities::TetraEntity, unimplemented_log};
 use tetra_pdus::cmce::enums::pre_coded_status::PreCodedStatus;
 use tetra_pdus::cmce::enums::short_report_type::ShortReportType;
+use tetra_pdus::cmce::enums::type3_elem_id::CmceType3ElemId;
 use tetra_saps::control::enums::sds_user_data::SdsUserData;
 use tetra_saps::control::sds::CmceSdsData;
 use tetra_saps::lcmc::LcmcMleUnitdataReq;
@@ -88,6 +90,14 @@ impl SdsBsSubentity {
                     user_defined_data: pdu.user_defined_data,
                 }),
             });
+        } else if let Some(gateway_issi) = self.config.state_read().subscribers.find_gateway_for_dm_ms(dest_ssi) {
+            tracing::info!(
+                "SDS: gateway delivery: {} -> DM-MS {} via gateway {}",
+                source_ssi,
+                dest_ssi,
+                gateway_issi
+            );
+            self.send_d_sds_data_via_gateway(queue, message.dltime, source_ssi, gateway_issi, dest_ssi, pdu.user_defined_data);
         } else {
             tracing::warn!("SDS: dest SSI {} not local and not Brew-routable, dropping", dest_ssi);
         }
@@ -107,8 +117,32 @@ impl SdsBsSubentity {
             sds.user_defined_data.length_bits()
         );
 
-        if !self.config.state_read().subscribers.is_registered(sds.dest_issi) {
-            tracing::warn!("SDS: dest ISSI {} from Brew is not locally registered, dropping", sds.dest_issi);
+        let is_local = self.config.state_read().subscribers.is_registered(sds.dest_issi);
+        let gateway = if !is_local {
+            self.config.state_read().subscribers.find_gateway_for_dm_ms(sds.dest_issi)
+        } else {
+            None
+        };
+
+        if !is_local && gateway.is_none() {
+            tracing::warn!(
+                "SDS: dest ISSI {} from Brew is not locally registered and not a DM-MS, dropping",
+                sds.dest_issi
+            );
+            return;
+        }
+
+        if let Some(gateway_issi) = gateway {
+            // Route to DM-MS via gateway
+            tracing::info!("SDS: Brew -> DM-MS {} via gateway {}", sds.dest_issi, gateway_issi);
+            self.send_d_sds_data_via_gateway(
+                queue,
+                message.dltime.forward_to_timeslot(1),
+                sds.source_issi,
+                gateway_issi,
+                sds.dest_issi,
+                sds.user_defined_data,
+            );
             return;
         }
 
@@ -206,6 +240,14 @@ impl SdsBsSubentity {
                     user_defined_data,
                 }),
             });
+        } else if let Some(gateway_issi) = self.config.state_read().subscribers.find_gateway_for_dm_ms(dest_ssi) {
+            tracing::info!(
+                "SDS-STATUS: gateway delivery: {} -> DM-MS {} via gateway {}",
+                source_ssi,
+                dest_ssi,
+                gateway_issi
+            );
+            self.send_d_status_via_gateway(queue, message.dltime, source_ssi, gateway_issi, dest_ssi, pdu.pre_coded_status);
         } else {
             tracing::warn!(
                 "SDS-STATUS: dest ISSI {} not locally registered and not Brew-routable, dropping",
@@ -242,6 +284,58 @@ impl SdsBsSubentity {
         sdu.seek(0);
 
         let dest_addr = TetraAddress::new(dest_issi, SsiType::Issi);
+        let msg = SapMsg {
+            sap: Sap::LcmcSap,
+            src: TetraEntity::Cmce,
+            dest: TetraEntity::Mle,
+            dltime,
+            msg: SapMsgInner::LcmcMleUnitdataReq(LcmcMleUnitdataReq {
+                sdu,
+                handle: 0,
+                endpoint_id: 0,
+                link_id: 0,
+                layer2service: 0,
+                pdu_prio: 0,
+                layer2_qos: 0,
+                stealing_permission: false,
+                stealing_repeats_flag: false,
+                chan_alloc: None,
+                main_address: dest_addr,
+                tx_reporter: None,
+            }),
+        };
+        queue.push_back(msg);
+    }
+
+    /// Build and send a D-STATUS PDU to a DM-MS via its gateway.
+    fn send_d_status_via_gateway(
+        &self,
+        queue: &mut MessageQueue,
+        dltime: tetra_core::TdmaTime,
+        source_issi: u32,
+        gateway_issi: u32,
+        dm_ms_ssi: u32,
+        pre_coded_status: PreCodedStatus,
+    ) {
+        let pdu = DStatus {
+            calling_party_type_identifier: PartyTypeIdentifier::Ssi,
+            calling_party_address_ssi: Some(source_issi as u64),
+            calling_party_extension: None,
+            pre_coded_status,
+            external_subscriber_number: None,
+            dm_ms_address: Some(Self::make_dm_ms_address_type3(dm_ms_ssi)),
+        };
+
+        tracing::debug!("-> D-STATUS (via gateway {}) {:?}", gateway_issi, pdu);
+
+        let mut sdu = BitBuffer::new_autoexpand(64);
+        if let Err(e) = pdu.to_bitbuf(&mut sdu) {
+            tracing::error!("Failed to serialize D-STATUS: {:?}", e);
+            return;
+        }
+        sdu.seek(0);
+
+        let dest_addr = TetraAddress::new(gateway_issi, SsiType::Issi);
         let msg = SapMsg {
             sap: Sap::LcmcSap,
             src: TetraEntity::Cmce,
@@ -315,6 +409,71 @@ impl SdsBsSubentity {
             }),
         };
         queue.push_back(msg);
+    }
+
+    /// Build and send a D-SDS-DATA PDU to a DM-MS via its gateway.
+    /// The PDU is addressed to the gateway ISSI but includes the dm_ms_address type3 element.
+    fn send_d_sds_data_via_gateway(
+        &self,
+        queue: &mut MessageQueue,
+        dltime: tetra_core::TdmaTime,
+        source_issi: u32,
+        gateway_issi: u32,
+        dm_ms_ssi: u32,
+        user_defined_data: SdsUserData,
+    ) {
+        let pdu = DSdsData {
+            calling_party_type_identifier: PartyTypeIdentifier::Ssi,
+            calling_party_address_ssi: Some(source_issi as u64),
+            calling_party_extension: None,
+            user_defined_data,
+            external_subscriber_number: None,
+            dm_ms_address: Some(Self::make_dm_ms_address_type3(dm_ms_ssi)),
+        };
+
+        tracing::debug!("-> D-SDS-DATA (via gateway {}) {:?}", gateway_issi, pdu);
+
+        let mut sdu = BitBuffer::new_autoexpand(128);
+        if let Err(e) = pdu.to_bitbuf(&mut sdu) {
+            tracing::error!("Failed to serialize D-SDS-DATA: {:?}", e);
+            return;
+        }
+        sdu.seek(0);
+
+        let dest_addr = TetraAddress::new(gateway_issi, SsiType::Issi);
+        let msg = SapMsg {
+            sap: Sap::LcmcSap,
+            src: TetraEntity::Cmce,
+            dest: TetraEntity::Mle,
+            dltime,
+            msg: SapMsgInner::LcmcMleUnitdataReq(LcmcMleUnitdataReq {
+                sdu,
+                handle: 0,
+                endpoint_id: 0,
+                link_id: 0,
+                layer2service: 0,
+                pdu_prio: 0,
+                layer2_qos: 0,
+                stealing_permission: false,
+                stealing_repeats_flag: false,
+                chan_alloc: None,
+                main_address: dest_addr,
+                tx_reporter: None,
+            }),
+        };
+        queue.push_back(msg);
+    }
+
+    /// Build a DM-MS address type3 element (EN 300 396-5, B.3.1).
+    /// address_type = 0 (SSI only), 2 bits + 24 bits SSI = 26 bits data.
+    fn make_dm_ms_address_type3(dm_ms_ssi: u32) -> Type3FieldGeneric {
+        // Data: 2-bit address_type (0) in MSB positions, then 24-bit SSI
+        let data = (dm_ms_ssi as u64) & 0x00FFFFFF; // address_type=0, so top 2 bits are 0
+        Type3FieldGeneric {
+            field_id: CmceType3ElemId::DmMsAddr.into_raw(),
+            len: 26,
+            data,
+        }
     }
 
     fn feature_check_u_sds_data(pdu: &USdsData) -> bool {
