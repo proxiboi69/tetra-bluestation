@@ -794,8 +794,9 @@ impl MmBs {
     }
 
     /// Parse DM-MS addresses from a gateway U-MM STATUS sub-PDU's dependent information.
-    /// Sub-PDU layout: 8 reserved bits + 4-bit count + N × (2-bit address_type + 24-bit SSI).
-    /// We only support address_type 0 (SSI only).
+    /// Sub-PDU layout: 8 reserved bits + 4-bit count + N x DM-MS address elements.
+    /// Each DM-MS address element per EN 300 396-5, B.3.1:
+    /// 1-bit identity_address_type + 24-bit SSI + optional 24-bit extension (if type=1/TSI).
     fn parse_gateway_dm_ms_addresses(info: Option<u64>, info_len: Option<usize>) -> Vec<u32> {
         let Some(raw) = info else {
             return Vec::new();
@@ -827,8 +828,8 @@ impl MmBs {
 
         let mut addresses = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            // address_type (2 bits) + SSI (24 bits) = 26 bits per address
-            let addr_type = match buf.read_field(2, "dm_ms_address_type") {
+            // identity_address_type (1 bit): 0=SSI, 1=TSI
+            let addr_type = match buf.read_field(1, "dm_ms_identity_address_type") {
                 Ok(t) => t,
                 Err(_) => break,
             };
@@ -836,13 +837,11 @@ impl MmBs {
                 Ok(s) => s as u32,
                 Err(_) => break,
             };
-
-            if addr_type != 0 {
-                tracing::warn!(
-                    "MM: unsupported DM-MS address type {} (only SSI/type 0 supported), skipping",
-                    addr_type
-                );
-                continue;
+            // If TSI (type=1), skip the 24-bit MNI extension, we only need the SSI
+            if addr_type == 1 {
+                if buf.read_field(24, "dm_ms_address_extension").is_err() {
+                    break;
+                }
             }
 
             addresses.push(ssi);

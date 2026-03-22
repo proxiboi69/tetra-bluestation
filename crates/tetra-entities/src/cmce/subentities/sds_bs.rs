@@ -480,26 +480,29 @@ impl SdsBsSubentity {
     }
 
     /// Extract the DM-MS SSI from a dm_ms_address type3 element (EN 300 396-5, B.3.1).
-    /// Returns None if address_type is not 0 (SSI only) or element is absent.
+    /// The element has: 1-bit identity_address_type + 24-bit SSI + optional 24-bit MNI extension.
+    /// Type 0 = SSI only (25 bits), Type 1 = TSI with MNI extension (49 bits).
+    /// We extract the SSI from both types.
     fn extract_dm_ms_ssi(dm_ms_address: &Option<Type3FieldGeneric>) -> Option<u32> {
         let addr = dm_ms_address.as_ref()?;
-        // Data layout: top 2 bits = address_type, lower 24 bits = SSI
-        let address_type = (addr.data >> 24) & 0x3;
-        if address_type != 0 {
-            tracing::warn!("DM-MS address_type {} not supported (only SSI/type 0)", address_type);
+        if addr.len < 25 {
+            tracing::warn!("DM-MS address too short: {} bits", addr.len);
             return None;
         }
-        Some((addr.data & 0x00FFFFFF) as u32)
+        // Bit layout: [identity_address_type (1)] [SSI (24)] [extension (24) if type=1]
+        // SSI is in bits 1..24 (counting from MSB), so shift right by (len - 1 - 24) and mask
+        let ssi = ((addr.data >> (addr.len - 25)) & 0x00FFFFFF) as u32;
+        Some(ssi)
     }
 
     /// Build a DM-MS address type3 element (EN 300 396-5, B.3.1).
-    /// address_type = 0 (SSI only), 2 bits + 24 bits SSI = 26 bits data.
+    /// identity_address_type = 0 (SSI only), 1 bit + 24 bits SSI = 25 bits data.
     fn make_dm_ms_address_type3(dm_ms_ssi: u32) -> Type3FieldGeneric {
-        // Data: 2-bit address_type (0) in MSB positions, then 24-bit SSI
-        let data = (dm_ms_ssi as u64) & 0x00FFFFFF; // address_type=0, so top 2 bits are 0
+        // Data: 1-bit identity_address_type (0) then 24-bit SSI
+        let data = (dm_ms_ssi as u64) & 0x00FFFFFF; // type=0, so MSB is 0
         Type3FieldGeneric {
             field_id: CmceType3ElemId::DmMsAddr.into_raw(),
-            len: 26,
+            len: 25,
             data,
         }
     }
