@@ -56,14 +56,27 @@ impl SdsBsSubentity {
         // Extract destination SSI (guaranteed present after feature check)
         let dest_ssi = pdu.called_party_ssi.unwrap() as u32;
 
-        let source_ssi = calling_party.ssi;
+        // If dm_ms_address is present, the sender is a gateway relaying on behalf of a DMO MS.
+        // Use the actual DMO MS ISSI as the source (EN 300 396-5, B.1).
+        let dm_ms_ssi = Self::extract_dm_ms_ssi(&pdu.dm_ms_address);
+        let source_ssi = dm_ms_ssi.unwrap_or(calling_party.ssi);
 
-        tracing::info!(
-            "SDS: U-SDS-DATA from ISSI {} to ISSI {}, type={}",
-            source_ssi,
-            dest_ssi,
-            pdu.user_defined_data.type_identifier()
-        );
+        if dm_ms_ssi.is_some() {
+            tracing::info!(
+                "SDS: U-SDS-DATA from DM-MS {} (via gateway {}) to {}, type={}",
+                source_ssi,
+                calling_party.ssi,
+                dest_ssi,
+                pdu.user_defined_data.type_identifier()
+            );
+        } else {
+            tracing::info!(
+                "SDS: U-SDS-DATA from ISSI {} to ISSI {}, type={}",
+                source_ssi,
+                dest_ssi,
+                pdu.user_defined_data.type_identifier()
+            );
+        }
 
         // Route: local delivery (ISSI or GSSI), Brew forward, or drop
         let is_local_issi = self.config.state_read().subscribers.is_registered(dest_ssi);
@@ -185,7 +198,9 @@ impl SdsBsSubentity {
         // Extract destination SSI (guaranteed present after feature check)
         let dest_ssi = pdu.called_party_ssi.unwrap() as u32;
 
-        let source_ssi = calling_party.ssi;
+        // If dm_ms_address is present, use actual DMO MS ISSI as source
+        let dm_ms_ssi = Self::extract_dm_ms_ssi(&pdu.dm_ms_address);
+        let source_ssi = dm_ms_ssi.unwrap_or(calling_party.ssi);
 
         tracing::info!(
             "SDS: U-STATUS from ISSI {} to ISSI {}, status={}",
@@ -464,6 +479,19 @@ impl SdsBsSubentity {
         queue.push_back(msg);
     }
 
+    /// Extract the DM-MS SSI from a dm_ms_address type3 element (EN 300 396-5, B.3.1).
+    /// Returns None if address_type is not 0 (SSI only) or element is absent.
+    fn extract_dm_ms_ssi(dm_ms_address: &Option<Type3FieldGeneric>) -> Option<u32> {
+        let addr = dm_ms_address.as_ref()?;
+        // Data layout: top 2 bits = address_type, lower 24 bits = SSI
+        let address_type = (addr.data >> 24) & 0x3;
+        if address_type != 0 {
+            tracing::warn!("DM-MS address_type {} not supported (only SSI/type 0)", address_type);
+            return None;
+        }
+        Some((addr.data & 0x00FFFFFF) as u32)
+    }
+
     /// Build a DM-MS address type3 element (EN 300 396-5, B.3.1).
     /// address_type = 0 (SSI only), 2 bits + 24 bits SSI = 26 bits data.
     fn make_dm_ms_address_type3(dm_ms_ssi: u32) -> Type3FieldGeneric {
@@ -486,14 +514,10 @@ impl SdsBsSubentity {
             }
             supported = false;
         }
-        if pdu.called_party_extension.is_some() {
-            unimplemented_log!("SDS: TSI extension addressing not supported");
-        }
+        // called_party_extension (TSI) is safely ignored — we route by SSI only.
+        // dm_ms_address is handled: we extract the actual DMO MS source ISSI from it.
         if pdu.external_subscriber_number.is_some() {
             unimplemented_log!("SDS: external_subscriber_number not supported");
-        }
-        if pdu.dm_ms_address.is_some() {
-            unimplemented_log!("SDS: dm_ms_address not supported");
         }
         supported
     }
@@ -508,14 +532,10 @@ impl SdsBsSubentity {
             }
             supported = false;
         }
-        if pdu.called_party_extension.is_some() {
-            unimplemented_log!("SDS-STATUS: TSI extension addressing not supported");
-        }
+        // called_party_extension (TSI) is safely ignored — we route by SSI only.
+        // dm_ms_address is handled: we extract the actual DMO MS source ISSI from it.
         if pdu.external_subscriber_number.is_some() {
             unimplemented_log!("SDS-STATUS: external_subscriber_number not supported");
-        }
-        if pdu.dm_ms_address.is_some() {
-            unimplemented_log!("SDS-STATUS: dm_ms_address not supported");
         }
         supported
     }
