@@ -1,5 +1,6 @@
 use core::fmt;
 
+use tetra_core::typed_pdu_fields::delimiters;
 use tetra_core::{BitBuffer, pdu_parse_error::PduParseErr};
 
 use crate::mm::enums::mm_pdu_type_dl::MmPduTypeDl;
@@ -86,6 +87,9 @@ impl DMmStatus {
             }
         }
 
+        // Terminating o-bit = 0 (no optional Type 3/4 fields follow)
+        delimiters::write_obit(buffer, 0);
+
         Ok(())
     }
 
@@ -120,8 +124,8 @@ mod tests {
         let mut buf = BitBuffer::new_autoexpand(32);
         pdu.to_bitbuf(&mut buf).unwrap();
         buf.seek(0);
-        // 4 (pdu_type=DMmStatus=0011) + 6 (status_downlink=16=010000) + 8 (reserved) + 4 (count=0) = 22 bits
-        assert_eq!(buf.get_len(), 22);
+        // 4 (pdu_type) + 6 (status_downlink) + 8 (reserved) + 4 (count=0) + 1 (o-bit) = 23 bits
+        assert_eq!(buf.get_len(), 23);
         let pdu_type = buf.read_field(4, "pdu_type").unwrap();
         assert_eq!(pdu_type, MmPduTypeDl::DMmStatus.into_raw());
         let status = buf.read_field(6, "status_downlink").unwrap();
@@ -138,8 +142,8 @@ mod tests {
         let mut buf = BitBuffer::new_autoexpand(32);
         pdu.to_bitbuf(&mut buf).unwrap();
         buf.seek(0);
-        // 4 + 6 + 1 (retained=1) + 7 (reserved) = 18 bits
-        assert_eq!(buf.get_len(), 18);
+        // 4 + 6 + 1 (retained=1) + 7 (reserved) + 1 (o-bit) = 19 bits
+        assert_eq!(buf.get_len(), 19);
         let _ = buf.read_field(4, "pdu_type").unwrap();
         let status = buf.read_field(6, "status_downlink").unwrap();
         assert_eq!(status, 18); // AcceptanceToContinueDmGatewayOperation
@@ -153,8 +157,8 @@ mod tests {
         let mut buf = BitBuffer::new_autoexpand(32);
         pdu.to_bitbuf(&mut buf).unwrap();
         buf.seek(0);
-        // 4 + 6 + 8 (reserved) = 18 bits
-        assert_eq!(buf.get_len(), 18);
+        // 4 + 6 + 8 (reserved) + 1 (o-bit) = 19 bits
+        assert_eq!(buf.get_len(), 19);
         let _ = buf.read_field(4, "pdu_type").unwrap();
         let status = buf.read_field(6, "status_downlink").unwrap();
         assert_eq!(status, 20); // AcceptanceToStopDmGatewayOperation
