@@ -1,9 +1,16 @@
 use tetra_core::{BitBuffer, Direction, PhyBlockNum, PhysicalChannel, TdmaTime, TetraAddress, Todo, TxReporter, unimplemented_log};
 use tetra_saps::{
-    control::call_control::Circuit,
+    control::call_control::{Circuit, CircuitDlMediaSource},
     tmv::{TmvUnitdataReq, TmvUnitdataReqSlot, enums::logical_chans::LogicalChannel},
 };
 
+use crate::{
+    lmac::components::scrambler,
+    umac::subcomp::{bs_frag::BsFragger, circuit_mgr::CircuitMgr},
+};
+use tetra_pdus::umac::enums::access_code::AccessCode;
+use tetra_pdus::umac::structs::access_field::AccessField;
+use tetra_pdus::umac::structs::base_frame_length::BaseFrameLength;
 use tetra_pdus::{
     mle::pdus::{d_mle_sync::DMleSync, d_mle_sysinfo::DMleSysinfo},
     umac::{
@@ -14,18 +21,10 @@ use tetra_pdus::{
         },
         fields::basic_slotgrant::BasicSlotgrant,
         pdus::{
-            access_assign::{AccessAssign, AccessField},
-            access_assign_fr18::AccessAssignFr18,
-            mac_resource::MacResource,
-            mac_sync::MacSync,
+            access_assign::AccessAssign, access_assign_fr18::AccessAssignFr18, mac_resource::MacResource, mac_sync::MacSync,
             mac_sysinfo::MacSysinfo,
         },
     },
-};
-
-use crate::{
-    lmac::components::scrambler,
-    umac::subcomp::{bs_frag::BsFragger, circuit_mgr::CircuitMgr},
 };
 
 /// We submit this many TX timeslots ahead of the current time
@@ -39,6 +38,9 @@ const NULL_PDU_LEN_BITS: usize = 16;
 pub const SCH_HD_CAP: usize = 124;
 pub const SCH_F_CAP: usize = 268;
 pub const TCH_S_CAP: usize = 274;
+
+// The default access frame marker used in access fields
+const DEFAULT_ACCESS_FRAME_MARKER: BaseFrameLength = BaseFrameLength::Subslots2;
 
 /// Number of timeslots the scheduler operates on. May become larger when secondary carriers are supported.
 pub const NUM_TIMESLOTS: usize = 4;
@@ -156,6 +158,10 @@ impl BsChannelScheduler {
     }
 
     pub fn is_hangtime(&self, ts: u8) -> bool {
+        if !(1..=4).contains(&ts) {
+            tracing::warn!("BsChannelScheduler::is_hangtime: invalid ts {}", ts);
+            return false;
+        }
         self.hangtime[ts as usize - 1]
     }
 
@@ -495,6 +501,16 @@ impl BsChannelScheduler {
         self.circuits.is_active(dir, ts)
     }
 
+    /// Duplex peer timeslot of the uplink circuit on this timeslot, if any.
+    pub fn ul_peer_ts(&self, ts: u8) -> Option<u8> {
+        self.circuits.ul_peer_ts(ts)
+    }
+
+    /// Downlink media source of the circuit on this timeslot, if any.
+    pub fn dl_media_source(&self, ts: u8) -> Option<CircuitDlMediaSource> {
+        self.circuits.dl_media_source(ts)
+    }
+
     pub fn close_circuit(&mut self, dir: Direction, ts: u8) -> Option<Circuit> {
         // Clearing hangtime here is safe: if the circuit is gone, this timeslot is no longer in use.
         if (1..=4).contains(&ts) {
@@ -619,10 +635,10 @@ impl BsChannelScheduler {
                 i += 1;
             } else {
                 // Found a to-be-discarded element.
-                // Remove, warn, and call tx_reporter::mark_discarded() if appliccable
+                // Remove, log, and call tx_reporter::mark_discarded() if applicable
                 let elem = queue.remove(i);
                 item_was_discarded = true;
-                tracing::warn!("dl_drop_all_except_stolen: discarding scheduled {:?} on ts {}", elem, timeslot);
+                tracing::debug!("dl_drop_all_except_stolen: discarding scheduled {:?} on ts {}", elem, timeslot);
 
                 match elem {
                     DlSchedElem::Resource(_, _, tx_reporter) => {
@@ -1088,80 +1104,110 @@ impl BsChannelScheduler {
 
         // Generate BBK block
         let mut aach_bb = BitBuffer::new(14);
+
         if ts.f != 18 {
-            let mut aach = AccessAssign::default();
-
-            match ts.t {
+            let aach = match ts.t {
+                // MCCH (TS1)
                 1 => {
+                    // 23.3.1.1.2
+                    // "During normal mode operation, it shall always be assumed that slot 1 on the
+                    // downlink is for common control as part of the MCCH."
                     assert!(dl_traffic_usage.is_none(), "DL ts 1 can't be traffic");
-                    assert!(ul_traffic_usage.is_none(), "UL ts 1 can't be traffic (is this allowed?"); // TODO FIXME check spec
 
-                    // Always CommonOnly on TS1 (MCCH). Per ETSI 23.5.2.2.2, the MS
-                    // with a grant transmits in granted slots without checking the AACH.
-                    aach.dl_usage = AccessAssignDlUsage::CommonControl;
-                    aach.ul_usage = AccessAssignUlUsage::CommonOnly;
-                    aach.f1_af1 = Some(AccessField {
-                        access_code: 0,
-                        base_frame_len: 4,
-                    });
-                    aach.f2_af2 = Some(AccessField {
-                        access_code: 0,
-                        base_frame_len: 4,
-                    });
-                }
-                2..=4 => {
-                    // Additional channels (TS2..TS4).
-                    // Normal operation: Traffic(usage) when a circuit is active, else Unallocated.
-                    // Hangtime: immediately switch AACH to AssignedControl so radios
-                    // detect the end of traffic in the same frame as D-TX CEASED.
-                    // The timeslot may still be in traffic mode (for STCH delivery) but
-                    // the AACH reflects the new channel state.
-                    let in_hangtime = (2..=4).contains(&ts.t) && self.hangtime[ts.t as usize - 1];
+                    // TODO FIXME: It *is* possible for UL TS1 to carry traffic.
+                    //
+                    // 23.3.4 Independent allocation of uplink and downlink
+                    // "A BS may allocate uplink and downlink channels for different purposes. Some examples are listed below:"
+                    // "[...] common control on downlink MCCH (slot 1); uplink slot 1 of main carrier allocated for a circuit mode call;"
+                    //
+                    // That said, it's not something that tetra-bluestation does right now, so this assert is still sensible.
+                    assert!(ul_traffic_usage.is_none(), "UL TS 1 can't currently be traffic");
 
-                    if in_hangtime && (dl_traffic_usage.is_some() || ul_traffic_usage.is_some()) {
-                        aach.dl_usage = AccessAssignDlUsage::AssignedControl;
-                        // AssignedOnly (Header 2) allows random access for MSs on
-                        // the assigned channel while blocking common control MSs.
-                        aach.ul_usage = AccessAssignUlUsage::AssignedOnly;
-                        aach.f2_af = Some(AccessField {
-                            access_code: 0,
-                            base_frame_len: 4,
-                        });
-                    } else {
-                        aach.dl_usage = if let Some(usage) = dl_traffic_usage {
-                            AccessAssignDlUsage::Traffic(usage)
-                        } else {
-                            AccessAssignDlUsage::Unallocated
-                        };
-                        aach.ul_usage = if let Some(usage) = ul_traffic_usage {
-                            AccessAssignUlUsage::Traffic(usage)
-                        } else {
-                            AccessAssignUlUsage::Unallocated
-                        };
+                    // Indicate any reserved slots in the uplink with base_frame_len=ReservedSubslot
+                    AccessAssign::DownlinkCommonControlUplinkCommonOnly {
+                        access_field_1: AccessField {
+                            access_code: AccessCode::AccessCodeA,
+                            base_frame_len: if self.ul_get_slot_owner(ts, PhyBlockNum::Block1).is_some() {
+                                BaseFrameLength::ReservedSubslot
+                            } else {
+                                DEFAULT_ACCESS_FRAME_MARKER
+                            },
+                        },
+                        access_field_2: AccessField {
+                            access_code: AccessCode::AccessCodeA,
+                            base_frame_len: if self.ul_get_slot_owner(ts, PhyBlockNum::Block2).is_some() {
+                                BaseFrameLength::ReservedSubslot
+                            } else {
+                                DEFAULT_ACCESS_FRAME_MARKER
+                            },
+                        },
                     }
                 }
+
+                // Additional channels (TS2..TS4)
+                2..=4 => {
+                    if self.is_hangtime(ts.t) && (dl_traffic_usage.is_some() || ul_traffic_usage.is_some()) {
+                        // Hangtime: immediately switch AACH to AssignedControl so radios
+                        // detect the end of traffic in the same frame as D-TX CEASED.
+                        // The timeslot may still be in traffic mode (for STCH delivery) but
+                        // the AACH reflects the new channel state.
+                        AccessAssign::DownlinkDefinedUplinkAssignedOnly {
+                            downlink_usage_marker: AccessAssignDlUsage::AssignedControl,
+                            access_field: AccessField {
+                                access_code: AccessCode::AccessCodeA,
+                                base_frame_len: DEFAULT_ACCESS_FRAME_MARKER,
+                            },
+                        }
+                    } else {
+                        // Normal operation: Traffic(usage) when a circuit is active, else Unallocated
+                        AccessAssign::DownlinkDefinedUplinkDefined {
+                            downlink_usage_marker: if let Some(usage) = dl_traffic_usage {
+                                AccessAssignDlUsage::Traffic(usage)
+                            } else {
+                                AccessAssignDlUsage::Unallocated
+                            },
+                            uplink_usage_marker: if let Some(usage) = ul_traffic_usage {
+                                AccessAssignUlUsage::Traffic(usage)
+                            } else {
+                                AccessAssignUlUsage::Unallocated
+                            },
+                        }
+                    }
+                }
+
                 _ => panic!("finalize_ts_for_tick: invalid timeslot {}", ts.t),
-            }
+            };
 
             aach.to_bitbuf(&mut aach_bb);
         } else {
-            // Fr18
+            // Frame 18 is the Control Frame, which cannot contain traffic
             assert!(ul_traffic_usage.is_none() && dl_traffic_usage.is_none());
-            let aach = AccessAssignFr18 {
-                ul_usage: AccessAssignUlUsage::CommonOnly,
-                f1_af1: Some(AccessField {
-                    access_code: 0,
-                    base_frame_len: 1,
-                }),
-                f2_af2: Some(AccessField {
-                    access_code: 0,
-                    base_frame_len: 0,
-                }),
-                ..Default::default()
+
+            let aach = AccessAssignFr18::UplinkCommonOnly {
+                access_field_1: AccessField {
+                    access_code: AccessCode::AccessCodeA,
+                    base_frame_len: if self.ul_get_slot_owner(ts, PhyBlockNum::Block1).is_some() {
+                        // Subslot is reserved in the uplink
+                        BaseFrameLength::ReservedSubslot
+                    } else if ts.is_mandatory_clch() {
+                        // CLCH opportunity (which is always in SSN1, see EN 300 392 §9.5.1 Table 9.27)
+                        BaseFrameLength::CLCHSubslot
+                    } else {
+                        DEFAULT_ACCESS_FRAME_MARKER
+                    },
+                },
+                access_field_2: AccessField {
+                    access_code: AccessCode::AccessCodeA,
+                    base_frame_len: if self.ul_get_slot_owner(ts, PhyBlockNum::Block2).is_some() {
+                        BaseFrameLength::ReservedSubslot
+                    } else {
+                        DEFAULT_ACCESS_FRAME_MARKER
+                    },
+                },
             };
-            // TODO FIXME: Access field defaults are possibly not great
+
             aach.to_bitbuf(&mut aach_bb);
-        }
+        };
 
         TmvUnitdataReq {
             logical_channel: LogicalChannel::Aach,
@@ -1529,5 +1575,163 @@ mod tests {
         sched.dump_dl_queue();
 
         assert!(sched.dltx_queues[ts.t as usize - 1].len() == 1);
+    }
+
+    fn decode_aach(sched: &BsChannelScheduler, ts: TdmaTime) -> AccessAssign {
+        let bbk = sched.generate_bbk_block(ts);
+        let mut buf = bbk.mac_block.clone();
+        buf.seek(0);
+        AccessAssign::from_bitbuf(&mut buf).expect("Failed to decode AACH block")
+    }
+
+    /// During hangtime the AACH must hold AssignedControl on every frame, including
+    /// frames carrying a pending stolen block. If it flapped back to the traffic
+    /// usage marker, the end-of-traffic detector (N.212 successive non-UMt
+    /// ACCESS-ASSIGN PDUs, ETSI 23.8.2.3.2) would reset its count.
+    #[test]
+    fn test_hangtime_marker_does_not_flap_on_pending_stealing() {
+        use tetra_saps::control::call_control::{Circuit, CircuitDlMediaSource};
+        use tetra_saps::control::enums::circuit_mode_type::CircuitModeType;
+
+        let mut sched = get_testing_slotter();
+        let ts = TdmaTime { t: 2, f: 1, m: 1, h: 0 };
+
+        sched.create_circuit(
+            Direction::Dl,
+            Circuit {
+                direction: Direction::Dl,
+                ts: 2,
+                peer_ts: None,
+                usage: 6,
+                circuit_mode: CircuitModeType::TchS,
+                speech_service: Some(0),
+                etee_encrypted: false,
+                dl_media_source: CircuitDlMediaSource::LocalLoopback,
+            },
+        );
+
+        // Active over: traffic usage marker (UMt).
+        assert!(
+            decode_aach(&sched, ts).dl_is_traffic(),
+            "active over should carry the traffic usage marker"
+        );
+
+        // Hangtime, no pending steal: AssignedControl, not traffic.
+        sched.set_hangtime(2, true);
+        let aach = decode_aach(&sched, ts);
+        assert!(!aach.dl_is_traffic(), "hangtime should drop the traffic usage marker");
+        assert!(
+            matches!(
+                aach,
+                AccessAssign::DownlinkDefinedUplinkAssignedOnly {
+                    downlink_usage_marker: AccessAssignDlUsage::AssignedControl,
+                    ..
+                }
+            ),
+            "hangtime AACH should be AssignedControl, got {:?}",
+            aach
+        );
+
+        // Hangtime with a pending stolen block: still AssignedControl, no flap to UMt.
+        sched.dl_enqueue_stealing(2, BitBuffer::from_bitstr("10110000"), None);
+        assert!(sched.has_pending_stealing(2), "stealing block should be queued");
+        let aach = decode_aach(&sched, ts);
+        assert!(
+            !aach.dl_is_traffic(),
+            "hangtime marker must not flap back to traffic while a steal is pending, got {:?}",
+            aach
+        );
+    }
+
+    #[test]
+    fn test_dl_indicates_reserved_subslots() {
+        let mut sched = get_testing_slotter();
+        let mut ts = TdmaTime::default();
+
+        // Add a reservation for TS1, both subslots in the third occurrence of TS1
+        sched.ulsched[0][2] = TimeslotSchedule {
+            ul1: Some(1),
+            ul2: Some(1),
+        };
+
+        // Generate the next 4 frames to see how the reserved subslots are indicated in the BBK block
+        for i in 0..4 {
+            let bbk = sched.generate_bbk_block(ts);
+            let mut aach_buf = bbk.mac_block.clone();
+            aach_buf.seek(0);
+
+            // Decode the AACH (which in this test will always be the F1-17 format)
+            let access_assign = AccessAssign::from_bitbuf(&mut aach_buf).expect("Failed to decode AACH block");
+            tracing::debug!("Decoded AACH: {:?}", access_assign);
+
+            // Third occurrence should have both slots reserved
+            let expected_subslot_bfl = if i == 2 {
+                BaseFrameLength::ReservedSubslot
+            } else {
+                DEFAULT_ACCESS_FRAME_MARKER
+            };
+
+            match access_assign {
+                AccessAssign::DownlinkCommonControlUplinkCommonOnly {
+                    access_field_1,
+                    access_field_2,
+                } => {
+                    assert_eq!(
+                        access_field_1.base_frame_len,
+                        expected_subslot_bfl,
+                        "Unexpected base frame length for access field 1 on TS1 occurrence {}",
+                        i + 1
+                    );
+                    assert_eq!(
+                        access_field_2.base_frame_len,
+                        expected_subslot_bfl,
+                        "Unexpected base frame length for access field 2 on TS1 occurrence {}",
+                        i + 1
+                    );
+                }
+                _ => panic!("Expected DownlinkCommonControlUplinkCommonOnly format for TS1"),
+            }
+
+            // Move on to the next occurrence of TS1
+            ts = ts.add_timeslots(4);
+        }
+    }
+
+    #[test]
+    fn test_dl_indicates_clch_opportunities() {
+        let sched = get_testing_slotter();
+
+        // Frame 18
+        let mut ts = TdmaTime { t: 1, f: 18, m: 1, h: 0 };
+
+        // Generate the next 4 frames to make sure CLCH is correctly indicated
+        for _ in 0..4 {
+            let bbk = sched.generate_bbk_block(ts);
+            let mut aach_buf = bbk.mac_block.clone();
+            aach_buf.seek(0);
+
+            // Decode the AACH (which in this test will always be the frame 18 format)
+            let access_assign = AccessAssignFr18::from_bitbuf(&mut aach_buf).expect("Failed to decode AACH block");
+            tracing::debug!("Decoded AACH: {:?}", access_assign);
+
+            // For MN=1, F=18, T=2, SSN1 should be CLCH (when F == 18 and T == 4 - ((M + 1) % 4), otherwise default
+            let expected_subslot_bfl = if ts.t == 2 {
+                BaseFrameLength::CLCHSubslot
+            } else {
+                DEFAULT_ACCESS_FRAME_MARKER
+            };
+
+            match access_assign {
+                AccessAssignFr18::UplinkCommonOnly { access_field_1, .. } => {
+                    assert_eq!(
+                        access_field_1.base_frame_len, expected_subslot_bfl,
+                        "Unexpected base frame length for access field 1 on frame 18"
+                    );
+                }
+                _ => panic!("Expected AccessAssignFr18::UplinkCommonOnly format for frame 18"),
+            }
+
+            ts = ts.add_timeslots(1);
+        }
     }
 }
